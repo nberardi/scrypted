@@ -24,7 +24,7 @@ export class AlexaSignalingSession implements RTCSignalingSession {
                 width: 1280,
                 height: 720
             }
-        }
+        } as any;
     }
 
     async createLocalDescription(type: "offer" | "answer", setup: RTCAVSignalingSetup, sendIceCandidate: RTCSignalingSendIceCandidate): Promise<RTCSessionDescriptionInit> {

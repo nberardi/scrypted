@@ -1,11 +1,13 @@
 import axios from 'axios';
-import sdk, { HttpRequest, HttpRequestHandler, MixinProvider, ScryptedDevice, ScryptedDeviceBase, ScryptedDeviceType, ScryptedInterface, EventDetails, Setting, SettingValue, Settings, HttpResponseOptions, HttpResponse } from '@scrypted/sdk';
+import sdk, { HttpRequest, HttpRequestHandler, MixinProvider, ScryptedDevice, ScryptedDeviceBase, ScryptedDeviceType, ScryptedInterface, EventDetails, Setting, SettingValue, Settings, HttpResponseOptions, HttpResponse, DeviceProvider, SecuritySystem } from '@scrypted/sdk';
 import { StorageSettings } from '@scrypted/sdk/storage-settings';
 import { addBattery, addOnline, deviceErrorResponse, mirroredResponse, authErrorResponse, AlexaHttpResponse } from './common';
 import { supportedTypes } from './types';
 import { v4 as createMessageId } from 'uuid';
 import { ChangeReport, Discovery, DiscoveryEndpoint } from './alexa';
 import { alexaHandlers, alexaDeviceHandlers } from './handlers';
+import { AlexaSecuritySystemMixin } from './mixins/securitysystem';
+import { SettingsMixinDeviceOptions } from './mixins/settings-mixin';
 
 const { systemManager, deviceManager } = sdk;
 
@@ -13,6 +15,12 @@ const client_id = "amzn1.application-oa2-client.3283807e04d8408eb44a698c10f9dd13
 const client_secret = "bed445e2b26730acd818b90e175b275f6b67b18ff8645e571c5b3e311fa75ee9";
 const includeToken = 4;
 
+const listenDirectlyInterfaces = [
+    ScryptedInterface.ObjectDetection,
+    ScryptedInterface.SecuritySystem
+];
+
+export const ALEXA_MIXIN = 'mixin:@scrypted/alexa';
 export let DEBUG = false;
 
 function debug(...args: any[]) {
@@ -69,7 +77,11 @@ class AlexaPlugin extends ScryptedDeviceBase implements HttpRequestHandler, Mixi
 
         for (const id of Object.keys(systemManager.getSystemState())) {
             const device = systemManager.getDeviceById(id);
-            await this.tryEnableMixin(device);
+            const status = await this.tryEnableMixin(device);
+
+            if (status === DeviceMixinStatus.Setup || status === DeviceMixinStatus.AlreadySetup) {  
+                await this.trySetupDevice(device);
+            }
         }
 
         systemManager.listen((async (eventSource: ScryptedDevice | undefined, eventDetails: EventDetails, eventData: any) => {
@@ -80,17 +92,27 @@ class AlexaPlugin extends ScryptedDeviceBase implements HttpRequestHandler, Mixi
                 await this.syncEndpoints();
 
             if (status === DeviceMixinStatus.Setup || status === DeviceMixinStatus.AlreadySetup) {  
-
-                if (!this.devices.has(eventSource.id)) {
-                    this.devices.set(eventSource.id, eventSource);
-                    eventSource.listen(ScryptedInterface.ObjectDetector, this.deviceListen.bind(this));
-                }
-
+                await this.trySetupDevice(eventSource);
                 this.deviceListen(eventSource, eventDetails, eventData);
             }
         }).bind(this));
 
         await this.syncEndpoints();
+    }
+
+    private async trySetupDevice(device: ScryptedDevice): Promise<boolean> {
+        if (!this.devices.has(device.id)) {
+            this.devices.set(device.id, device);;
+
+            const implimentedInterfaces = device.interfaces.filter(i => listenDirectlyInterfaces.includes(i as ScryptedInterface));
+            implimentedInterfaces.forEach(i => {
+                device.listen({ event: i, watch: true }, this.deviceListen.bind(this));
+            });
+
+            this.console.log("adding", device.name);
+        }
+
+        return true;
     }
 
     private async tryEnableMixin(device: ScryptedDevice): Promise<DeviceMixinStatus> {
@@ -103,7 +125,7 @@ class AlexaPlugin extends ScryptedDeviceBase implements HttpRequestHandler, Mixi
 
         const defaultIncluded = this.storageSettings.values.defaultIncluded || {};
         if (defaultIncluded[device.id] === includeToken)
-            return DeviceMixinStatus.AlreadySetup;
+            return DeviceMixinStatus.Excluded;
 
         if (!supportedTypes.has(device.type))
             return DeviceMixinStatus.NotSupported;
@@ -122,17 +144,42 @@ class AlexaPlugin extends ScryptedDeviceBase implements HttpRequestHandler, Mixi
     async canMixin(type: ScryptedDeviceType, interfaces: string[]): Promise<string[]> {
         const available = supportedTypes.has(type);
 
-        if (available)
-            return [];
+        if (!available) {
+            return undefined;
+        }
 
-        return;
+        let ret = [
+            ScryptedInterface.Settings,
+            ALEXA_MIXIN
+        ];
+
+        if (type === ScryptedDeviceType.SecuritySystem) {
+            ret.push(ScryptedInterface.FloodSensor);
+        }
+
+        return ret;
     }
 
-    async getMixin(device: ScryptedDevice, mixinDeviceInterfaces: ScryptedInterface[], mixinDeviceState: { [key: string]: any }): Promise<any> {
-        return device;
+    async getMixin(mixinDevice: any, mixinDeviceInterfaces: ScryptedInterface[], mixinDeviceState: { [key: string]: any }): Promise<any> {
+        if (mixinDeviceState.type === ScryptedDeviceType.SecuritySystem) {
+            const options: SettingsMixinDeviceOptions<SecuritySystem & Settings> = {
+                group: 'Alexa',
+                groupKey: 'alexa',
+                mixinDevice,
+                mixinDeviceState,
+                mixinDeviceInterfaces,
+                mixinProviderNativeId: this.nativeId,
+            };
+
+            return new AlexaSecuritySystemMixin(options);
+        }
+
+        return mixinDevice;
     }
 
     async releaseMixin(id: string, mixinDevice: any): Promise<void> {
+        mixinDevice.release();
+
         const device = systemManager.getDeviceById(id);
         const mixins = (device.mixins || []).slice();
         if (mixins.includes(this.id))
@@ -648,7 +695,8 @@ class AlexaPlugin extends ScryptedDeviceBase implements HttpRequestHandler, Mixi
 enum DeviceMixinStatus {
     NotSupported = 0,
     Setup = 1,
-    AlreadySetup = 2
+    AlreadySetup = 2,
+    Excluded = 3
 }
 
 class HttpResponseLoggingImpl implements AlexaHttpResponse {

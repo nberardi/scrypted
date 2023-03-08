@@ -19,3 +19,4 @@ import './switch';
 import './switch/handlers';
 import './sensor';
 import './securitysystem';
+import './securitysystem/handlers';

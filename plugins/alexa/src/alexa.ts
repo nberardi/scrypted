@@ -27,12 +27,21 @@ export interface Response {
     context?: Context;
 }
 
+export interface SecurityPanelArmResponse {
+    event: Event<"Alexa.SecurityPanelController", "Arm.Response", SecurityPanelArmResponsePayload>;
+    context: Context;
+}
+
 export interface DeferredResponse {
     event: Event<"Alexa", "DeferredResponse", DeferredPayload>;
 }
 
 export interface ErrorResponse {
     event: Event<"Alexa", "ErrorResponse", ErrorPayload>;
+}
+
+export interface SecurityPanelErrorResponse {
+    event: Event<"Alexa.SecurityPanelController", "ErrorResponse", ErrorPayload>;
 }
 
 /*
@@ -123,6 +132,16 @@ export interface ChangePayload {
         },
         properties: Property[];
     }
+}
+
+export interface SecurityPanelArmResponsePayload {
+    exitDelayInSections?: number,
+    bypassedEndpoints?: SecurityPanelArmResponseEndpoint[]
+}
+
+export interface SecurityPanelArmResponseEndpoint {
+    friendlyName: string;
+    endpointId?: string;
 }
 
 export interface WebRTCSessionPayload {
