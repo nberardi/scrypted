@@ -164,6 +164,26 @@ export interface DiscoveryProperty {
     retrievable: boolean;
 }
 
+export interface DiscoverySemantic {
+    actionMappings?: any[];
+    stateMappings?: any[];
+}
+
+export interface RangeControllerDiscoveryCapability extends DiscoveryCapability {
+    type: "AlexaInterface";
+    interface: "Alexa.RangeController";
+    capabilityResources: any;
+    configuration: {
+        supportedRange: {
+            minimumValue: number;
+            maximumValue: number;
+            precision: number;
+        }
+        unitOfMeasure: string;
+        presets: any[];
+    }
+}
+
 export interface DiscoveryCapability {
     type: string;
     interface: string;
@@ -172,7 +192,10 @@ export interface DiscoveryCapability {
     properties?: DiscoveryProperty;
     capabilityResources?: any;
     configuration?: any;
+    configurations?: any;
     semantics?: any;
+    verificationRequired?: any[];
+    directiveConfigurations?: any[];
 }
 
 export interface DiscoveryEndpoint {

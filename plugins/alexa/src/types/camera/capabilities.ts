@@ -1,9 +1,9 @@
-import sdk, { MediaObject, MotionSensor, ObjectDetector, ScryptedDevice, ScryptedInterface } from "@scrypted/sdk";
-import { ChangeReport, DiscoveryCapability, ObjectDetectionEvent, Report, StateReport, Property } from "../../alexa";
+import sdk, { MediaObject, MotionSensor, ObjectDetector, PanTiltZoom, PanTiltZoomCapabilities, ScryptedDevice, ScryptedInterface } from "@scrypted/sdk";
+import { ChangeReport, DiscoveryCapability, ObjectDetectionEvent, Report, StateReport, Property, RangeControllerDiscoveryCapability } from "../../alexa";
 
 const { mediaManager } = sdk;
 
-export async function reportCameraState(device: ScryptedDevice & MotionSensor & ObjectDetector): Promise<Partial<Report>>{
+export async function reportCameraState(device: ScryptedDevice & MotionSensor & ObjectDetector & PanTiltZoom): Promise<Partial<Report>>{
     let data = {
         context: {
             properties: []
@@ -11,6 +11,10 @@ export async function reportCameraState(device: ScryptedDevice & MotionSensor & 
         
     } as Partial<StateReport>;
 
+    if (device.interfaces.includes(ScryptedInterface.PanTiltZoom)) {
+        console.debug('PanTiltZoom capabilities', device.ptzCapabilities);
+    }
+    
     if (device.interfaces.includes(ScryptedInterface.ObjectDetector)) {
         const detectionTypes = await (device as any as ObjectDetector).getObjectTypes();
         const classNames = detectionTypes.classes.filter(t => t !== 'ring' && t !== 'motion').map(type => type.toLowerCase());
@@ -39,7 +43,12 @@ export async function reportCameraState(device: ScryptedDevice & MotionSensor & 
     return data;
 };
 
-export async function sendCameraEvent (eventSource: ScryptedDevice & MotionSensor & ObjectDetector, eventDetails, eventData): Promise<Partial<Report>> {      
+export async function sendCameraEvent (eventSource: ScryptedDevice & MotionSensor & ObjectDetector & PanTiltZoom, eventDetails, eventData): Promise<Partial<Report>> {      
+
+    if (eventDetails.eventInterface === ScryptedInterface.PanTiltZoom) {
+        console.debug('PanTiltZoom event', eventDetails, eventData);
+    }
+
     if (eventDetails.eventInterface === ScryptedInterface.ObjectDetector) {
 
         // ring and motion are not valid objects
@@ -113,7 +122,367 @@ export async function sendCameraEvent (eventSource: ScryptedDevice & MotionSenso
     return undefined;
 };
 
-export async function getCameraCapabilities(device: ScryptedDevice): Promise<DiscoveryCapability[]> {
+function addZoom(capabilities: PanTiltZoomCapabilities) : RangeControllerDiscoveryCapability {
+    if (!capabilities.zoom) 
+        throw new Error('Zoom not supported');
+
+    let capability = {
+        "type": "AlexaInterface",
+        "interface": "Alexa.RangeController",
+        "version": "3",
+        "instance": "Camera.Zoom",
+        "capabilityResources": {
+            "friendlyNames": [{
+                    "@type": "text",
+                    "value": {
+                        "text": "Camera Zoom",
+                        "locale": "en-US"
+                    }
+                },
+                {
+                    "@type": "text",
+                    "value": {
+                        "text": "Zoom",
+                        "locale": "en-US"
+                    }
+                }
+            ]
+        },
+        "properties": {
+            "supported": [{
+                "name": "rangeValue"
+            }],
+            "retrievable": true,
+            "proactivelyReported": true
+        },
+        "configuration": {
+            "supportedRange": {
+                "minimumValue": 0,
+                "maximumValue": 100,
+                "precision": 1
+            },
+            "unitOfMeasure": "Alexa.Unit.Percent",
+            "presets": [{
+                    "rangeValue": 100,
+                    "presetResources": {
+                        "friendlyNames": [
+                            {
+                              "@type": "asset",
+                              "value": {
+                                "assetId": "Alexa.Value.Maximum"
+                              }
+                            },
+                            {
+                              "@type": "asset",
+                              "value": {
+                                "assetId": "Alexa.Value.High"
+                              }
+                            },
+                            {
+                            "@type": "text",
+                            "value": {
+                                "text": "Far In",
+                                "locale": "en-US"
+                            }
+                        }]
+                    }
+                },
+                {
+                    "rangeValue": 0,
+                    "presetResources": {
+                        "friendlyNames": [
+                            {
+                              "@type": "asset",
+                              "value": {
+                                "assetId": "Alexa.Value.Minimum"
+                              }
+                            },
+                            {
+                              "@type": "asset",
+                              "value": {
+                                "assetId": "Alexa.Value.Low"
+                              }
+                            },
+                            {
+                            "@type": "text",
+                            "value": {
+                                "text": "Far Back",
+                                "locale": "en-US"
+                            }
+                        }]
+                    }
+                }
+            ]
+        }
+    } as RangeControllerDiscoveryCapability;
+
+    return capability;
+}
+
+function addTilt(capabilities: PanTiltZoomCapabilities) : RangeControllerDiscoveryCapability {
+    if (!capabilities.tilt) 
+        throw new Error('Tilt not supported');
+
+    let capability = {
+        "type": "AlexaInterface",
+        "interface": "Alexa.RangeController",
+        "version": "3",
+        "instance": "Camera.Tilt",
+        "capabilityResources": {
+            "friendlyNames": [{
+                    "@type": "text",
+                    "value": {
+                        "text": "Camera Tilt",
+                        "locale": "en-US"
+                    }
+                },
+                {
+                    "@type": "text",
+                    "value": {
+                        "text": "Tilt",
+                        "locale": "en-US"
+                    }
+                }
+            ]
+        },
+        "properties": {
+            "supported": [{
+                "name": "rangeValue"
+            }],
+            "retrievable": true,
+            "proactivelyReported": true
+        },
+        "configuration": {
+            "supportedRange": {
+                "minimumValue": -200,
+                "maximumValue": 200,
+                "precision": 1
+            },
+            "unitOfMeasure": "Alexa.Unit.Percent",
+            "presets": [{
+                    "rangeValue": -200,
+                    "presetResources": {
+                    "friendlyNames": [
+                        {
+                          "@type": "asset",
+                          "value": {
+                            "assetId": "Alexa.Value.Minimum"
+                          }
+                        },
+                        {
+                          "@type": "asset",
+                          "value": {
+                            "assetId": "Alexa.Value.Low"
+                          }
+                        },
+                        {
+                            "@type": "asset",
+                            "value": {
+                              "assetId": "Alexa.Gesture.SwipeDown"
+                            }
+                        },
+                        {
+                            "@type": "text",
+                            "value": {
+                                "text": "Far Down",
+                                "locale": "en-US"
+                            }
+                        }]
+                    }
+                },
+                {
+                    "rangeValue": 0,
+                    "presetResources": {
+                        "friendlyNames": [
+                            {
+                              "@type": "asset",
+                              "value": {
+                                "assetId": "Alexa.Value.Medium"
+                              }
+                            },
+                            {
+                                "@type": "text",
+                                "value": {
+                                    "text": "Center",
+                                    "locale": "en-US"
+                            }
+                        }]
+                    }
+                },
+                {
+                    "rangeValue": 200,
+                    "presetResources": {
+                        "friendlyNames": [
+                            {
+                              "@type": "asset",
+                              "value": {
+                                "assetId": "Alexa.Value.Maximum"
+                              }
+                            },
+                            {
+                              "@type": "asset",
+                              "value": {
+                                "assetId": "Alexa.Value.High"
+                              }
+                            },
+                            {
+                                "@type": "asset",
+                                "value": {
+                                  "assetId": "Alexa.Gesture.SwipeUp"
+                                }
+                            },
+                            {
+                                "@type": "text",
+                                "value": {
+                                    "text": "Far Up",
+                                    "locale": "en-US"
+                            }
+                        }]
+                    }
+                }
+            ]
+        }
+    } as RangeControllerDiscoveryCapability;
+
+    return capability;
+}
+
+function addPan(capabilities: PanTiltZoomCapabilities) : RangeControllerDiscoveryCapability {
+    if (!capabilities.pan) 
+        throw new Error('Pan not supported');
+
+    let capability = {
+        "type": "AlexaInterface",
+        "interface": "Alexa.RangeController",
+        "version": "3",
+        "instance": "Camera.Pan",
+        "capabilityResources": {
+            "friendlyNames": [{
+                    "@type": "text",
+                    "value": {
+                        "text": "Camera Pan",
+                        "locale": "en-US"
+                    }
+                },
+                {
+                    "@type": "text",
+                    "value": {
+                        "text": "Camera Rotation",
+                        "locale": "en-US"
+                    }
+                },
+                {
+                    "@type": "text",
+                    "value": {
+                        "text": "Rotation",
+                        "locale": "en-US"
+                    }
+                }
+            ]
+        },
+        "properties": {
+            "supported": [{
+                "name": "rangeValue"
+            }],
+            "retrievable": true,
+            "proactivelyReported": true
+        },
+        "configuration": {
+            "supportedRange": {
+                "minimumValue": -200,
+                "maximumValue": 200,
+                "precision": 0.1
+            },
+            "unitOfMeasure": "Alexa.Unit.Percent",
+            "presets": [{
+                "rangeValue": -200,
+                "presetResources": {
+                "friendlyNames": [
+                    {
+                      "@type": "asset",
+                      "value": {
+                        "assetId": "Alexa.Value.Minimum"
+                      }
+                    },
+                    {
+                      "@type": "asset",
+                      "value": {
+                        "assetId": "Alexa.Value.Low"
+                      }
+                    },
+                    {
+                        "@type": "asset",
+                        "value": {
+                          "assetId": "Alexa.Gesture.SwipeLeft"
+                        }
+                    },
+                    {
+                        "@type": "text",
+                        "value": {
+                            "text": "Far Left",
+                            "locale": "en-US"
+                        }
+                    }]
+                }
+            },
+            {
+                "rangeValue": 0,
+                "presetResources": {
+                    "friendlyNames": [
+                        {
+                          "@type": "asset",
+                          "value": {
+                            "assetId": "Alexa.Value.Medium"
+                          }
+                        },
+                        {
+                            "@type": "text",
+                            "value": {
+                                "text": "Center",
+                                "locale": "en-US"
+                        }
+                    }]
+                }
+            },
+            {
+                "rangeValue": 200,
+                "presetResources": {
+                    "friendlyNames": [
+                        {
+                          "@type": "asset",
+                          "value": {
+                            "assetId": "Alexa.Value.Maximum"
+                          }
+                        },
+                        {
+                          "@type": "asset",
+                          "value": {
+                            "assetId": "Alexa.Value.High"
+                          }
+                        },
+                        {
+                            "@type": "asset",
+                            "value": {
+                              "assetId": "Alexa.Gesture.SwipeRight"
+                            }
+                        },
+                        {
+                            "@type": "text",
+                            "value": {
+                                "text": "Far Right",
+                                "locale": "en-US"
+                        }
+                    }]
+                }
+            }
+        ]
+        }
+    } as RangeControllerDiscoveryCapability;
+
+    return capability;
+}
+
+export async function getCameraCapabilities(device: ScryptedDevice & PanTiltZoom): Promise<DiscoveryCapability[]> {
     const capabilities = [
         {
             "type": "AlexaInterface",
@@ -169,6 +538,17 @@ export async function getCameraCapabilities(device: ScryptedDevice): Promise<Dis
                 }
             } as DiscoveryCapability
         );
+    }
+
+    if (device.interfaces.includes(ScryptedInterface.PanTiltZoom)) {
+        if (device.ptzCapabilities.pan)
+            capabilities.push(addPan(device.ptzCapabilities));
+
+        if (device.ptzCapabilities.tilt)
+            capabilities.push(addTilt(device.ptzCapabilities));
+
+        if (device.ptzCapabilities.zoom)
+            capabilities.push(addZoom(device.ptzCapabilities));
     }
 
     if (device.interfaces.includes(ScryptedInterface.MotionSensor)) {

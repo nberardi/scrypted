@@ -1,4 +1,4 @@
-import { ObjectDetector, RTCAVSignalingSetup, RTCSessionControl, RTCSignalingChannel, RTCSignalingOptions, RTCSignalingSendIceCandidate, RTCSignalingSession, ScryptedDevice } from "@scrypted/sdk";
+import { ObjectDetector, PanTiltZoom, RTCAVSignalingSetup, RTCSessionControl, RTCSignalingChannel, RTCSignalingOptions, RTCSignalingSendIceCandidate, RTCSignalingSession, ScryptedDevice } from "@scrypted/sdk";
 import { supportedTypes } from "..";
 import { v4 as createMessageId } from 'uuid';
 import { AlexaHttpResponse, sendDeviceResponse } from "../../common";
@@ -11,7 +11,7 @@ export class AlexaSignalingSession implements RTCSignalingSession {
 
     async getOptions(): Promise<RTCSignalingOptions> {
         return {
-            proxy: true,
+            proxy: false,
             offer: {
                 type: 'offer',
                 sdp: this.directive.payload.offer.value,
@@ -145,6 +145,91 @@ alexaDeviceHandlers.set('Alexa.SmartVision.ObjectDetectionSensor/SetObjectDetect
         }
     };
 
+    data.event.header.name = "Response";
+    data.event.header.messageId = createMessageId();
+
+    sendDeviceResponse(data, response, device);
+});
+
+// Alexa, set Test Camera Pan to 20%
+// Alexa, set Test Camera Tilt to 20%
+// Alexa, set Test Camera Zoom to 100
+alexaDeviceHandlers.set('Alexa.RangeController/SetRangeValue', async (request, response, directive: any, device: ScryptedDevice & PanTiltZoom) => {
+    const { header, endpoint, payload } = directive;
+    const { instance } = header;
+    const { rangeValue } = payload;
+
+    if (instance === 'Camera.Zoom') {
+        const value = Math.abs(rangeValue) / 100.0;
+        await device.ptzCommand({ zoom: value });
+    }
+    else if (instance === 'Camera.Pan') {
+        const value = Math.abs(rangeValue) / 200.0 * (rangeValue < 0 ? -1 : 1);
+        await device.ptzCommand({ pan: value });
+    } 
+    else if (instance === 'Camera.Tilt') {
+        const value = Math.abs(rangeValue) / 200.0 * (rangeValue < 0 ? -1 : 1);
+        await device.ptzCommand({ tilt: value });
+    }
+
+    const data: Response = {
+        "event": {
+            header,
+            endpoint,
+            payload: {}
+        },
+        "context": {
+            "properties": [{
+                namespace: "Alexa.RangeController",
+                instance: instance,
+                name: "rangeValue",
+                value: rangeValue,
+                timeOfSample: new Date().toISOString(),
+                uncertaintyInMilliseconds: 0
+            }]
+        }
+    };
+
+    data.event.header.namespace = "Alexa";
+    data.event.header.name = "Response";
+    data.event.header.messageId = createMessageId();
+
+    sendDeviceResponse(data, response, device);
+});
+
+alexaDeviceHandlers.set('Alexa.RangeController/AdjustRangeValue', async (request, response, directive: any, device: ScryptedDevice & PanTiltZoom) => {
+    const { header, endpoint, payload } = directive;
+    const { instance } = header;
+    const { rangeValueDelta, rangeValueDeltaDefault } = payload;
+
+    const rangeValue = (rangeValueDelta/100) * 1;
+
+    if (instance === 'Camera.Zoom')
+        await device.ptzCommand({ zoom: rangeValue });
+    else if (instance === 'Camera.Pan')
+        await device.ptzCommand({ pan: rangeValue });
+    else if (instance === 'Camera.Tilt')
+        await device.ptzCommand({ tilt: rangeValue });
+
+    const data: Response = {
+        "event": {
+            header,
+            endpoint,
+            payload: {}
+        },
+        "context": {
+            "properties": [{
+                namespace: "Alexa.RangeController",
+                instance: instance,
+                name: "rangeValue",
+                value: rangeValue,
+                timeOfSample: new Date().toISOString(),
+                uncertaintyInMilliseconds: 0
+            }]
+        }
+    };
+
+    data.event.header.namespace = "Alexa";
     data.event.header.name = "Response";
     data.event.header.messageId = createMessageId();
 

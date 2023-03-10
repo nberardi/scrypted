@@ -1,10 +1,10 @@
-import { MotionSensor, ObjectDetector, ScryptedDevice, ScryptedDeviceType, ScryptedInterface } from "@scrypted/sdk";
+import { MotionSensor, ObjectDetector, PanTiltZoom, ScryptedDevice, ScryptedDeviceType, ScryptedInterface } from "@scrypted/sdk";
 import { getCameraCapabilities, reportCameraState, sendCameraEvent } from "./camera/capabilities";
 import { DiscoveryEndpoint, DisplayCategory, Report, DoorbellPressEvent } from "../alexa";
 import { supportedTypes } from ".";
 
 supportedTypes.set(ScryptedDeviceType.Doorbell, {
-    async discover(device: ScryptedDevice): Promise<Partial<DiscoveryEndpoint>> {
+    async discover(device: ScryptedDevice & PanTiltZoom): Promise<Partial<DiscoveryEndpoint>> {
         let capabilities: any[] = [];
         let category: DisplayCategory = 'DOORBELL';
 
@@ -29,10 +29,10 @@ supportedTypes.set(ScryptedDeviceType.Doorbell, {
             capabilities
         };
     },
-    sendReport(device: ScryptedDevice & MotionSensor & ObjectDetector): Promise<Partial<Report>>{
+    sendReport(device: ScryptedDevice & MotionSensor & ObjectDetector & PanTiltZoom): Promise<Partial<Report>>{
         return reportCameraState(device);
     },
-    async sendEvent(eventSource: ScryptedDevice & MotionSensor & ObjectDetector, eventDetails, eventData): Promise<Partial<Report>> {
+    async sendEvent(eventSource: ScryptedDevice & MotionSensor & ObjectDetector & PanTiltZoom, eventDetails, eventData): Promise<Partial<Report>> {
         let response = await sendCameraEvent(eventSource, eventDetails, eventData);
 
         if (response)
