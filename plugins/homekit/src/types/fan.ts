@@ -14,7 +14,7 @@ addSupportedType({
     },
     getAccessory: async (device: ScryptedDevice & TemperatureSetting & Thermometer & HumiditySensor & OnOff & Fan & HumiditySetting & AirQualitySensor & PM10Sensor & PM25Sensor & VOCSensor & NOXSensor & CO2Sensor, homekitPlugin: HomeKitPlugin) => {
         const accessory = makeAccessory(device, homekitPlugin);
-        const service = addFan(device, accessory);
+        const service = addFan(Service.Fan,device, accessory);
         service.setPrimaryService();
 
         if (device.interfaces.includes(ScryptedInterface.TemperatureSetting) && device.interfaces.includes(ScryptedInterface.Thermometer)) {

@@ -223,7 +223,7 @@ addSupportedType({
             });
         }
 
-        addFan(device, accessory);
+        addFan(Service.Fanv2, device, accessory);
         addAirQualitySensor(device, accessory);
         addCarbonDioxideSensor(device, accessory);
 

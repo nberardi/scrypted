@@ -75,7 +75,7 @@ export function addCarbonDioxideSensor(device: ScryptedDevice & CO2Sensor, acces
     return co2Service;
 }
 
-export function addFan(device: ScryptedDevice & Fan & OnOff, accessory: Accessory): Service {
+export function addFan<S extends typeof Service>(S, device: ScryptedDevice & Fan & OnOff, accessory: Accessory): Service {
     if (!device.interfaces.includes(ScryptedInterface.OnOff) && !device.interfaces.includes(ScryptedInterface.Fan))
         return undefined;
 
