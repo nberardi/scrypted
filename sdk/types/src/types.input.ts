@@ -410,6 +410,7 @@ export enum ThermostatMode {
   Cool = "Cool",
   Heat = "Heat",
   HeatCool = "HeatCool",
+  EmergencyHeat = "EmergencyHeat",
   Auto = "Auto",
   FanOnly = "FanOnly",
   Purifier = "Purifier",

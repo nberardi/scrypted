@@ -234,6 +234,7 @@ class ThermostatMode(str, Enum):
     FanOnly = "FanOnly"
     Heat = "Heat"
     HeatCool = "HeatCool"
+    EmergencyHeat = "EmergencyHeat"
     Off = "Off"
     On = "On"
     Purifier = "Purifier"
