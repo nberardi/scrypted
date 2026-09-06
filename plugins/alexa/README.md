@@ -22,3 +22,10 @@ The Alexa Plugin lets you control your Scrypted devices from Amazon Alexa.
 5. Follow on-screen prompts and log in to Scrypted with the same account from the step 2.
 
 Your devices should now sync with Amazon Alexa.
+
+## Regression checks
+
+Run `node --experimental-vm-modules --test test/main.test.cjs` from this plugin directory
+with Node.js 22.13 or newer. These dependency-free tests execute the TypeScript module
+with mocked Scrypted, cloud, and Alexa services. They do not replace a full plugin
+build or live Alexa testing.

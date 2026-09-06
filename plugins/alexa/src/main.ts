@@ -17,8 +17,11 @@ const includeToken = 4;
 export let DEBUG = false;
 
 function debug(...args: any[]) {
-    if (DEBUG)
-        console.debug(...args);
+    if (DEBUG) {
+        const redacted = JSON.parse(JSON.stringify(args, (key, value) =>
+            /^(token|access_token|refresh_token|client_secret|authorization|code)$/i.test(key) ? '[REDACTED]' : value));
+        console.debug(...redacted);
+    }
 }
 
 class AlexaPlugin extends ScryptedDeviceBase implements HttpRequestHandler, MixinProvider, Settings {
@@ -53,6 +56,15 @@ class AlexaPlugin extends ScryptedDeviceBase implements HttpRequestHandler, Mixi
         pairedUserId: {
             title: "Pairing Key",
             description: "The pairing key used to validate requests from Alexa. Clear this key or delete the plugin to allow pairing with a different Alexa login.",
+            onPut: (oldValue, newValue) => {
+                if (oldValue === newValue)
+                    return;
+                this.authorizationGeneration++;
+                if (oldValue) {
+                    this.clearCredentials();
+                    this.storageSettings.values.syncedDevices = [];
+                }
+            },
         },
         disableAutoAdd: {
             title: "Disable auto add",
@@ -72,7 +84,9 @@ class AlexaPlugin extends ScryptedDeviceBase implements HttpRequestHandler, Mixi
     });
 
     accessToken: Promise<string>;
-    validAuths = new Set<string>();
+    private authorizationGeneration = 0;
+    private tokenGeneration = 0;
+    private endpointSync: Promise<void> = Promise.resolve();
     devices = new Map<string, ScryptedDevice>();
 
     constructor(nativeId?: string) {
@@ -97,23 +111,28 @@ class AlexaPlugin extends ScryptedDeviceBase implements HttpRequestHandler, Mixi
             await this.tryEnableMixin(device);
         }
 
-        systemManager.listen((async (eventSource: ScryptedDevice | undefined, eventDetails: EventDetails, eventData: any) => {
-            const status = await this.tryEnableMixin(eventSource);
+        const listen = (eventSource: ScryptedDevice | undefined, eventDetails: EventDetails, eventData: any) => {
+            this.deviceListen(eventSource, eventDetails, eventData).catch(e => this.console.error('Alexa event failed', e.message));
+        };
+        systemManager.listen((eventSource: ScryptedDevice | undefined, eventDetails: EventDetails, eventData: any) => {
+            (async () => {
+                const status = await this.tryEnableMixin(eventSource);
 
-            // sync new devices when added or removed
-            if (status === DeviceMixinStatus.Setup)
-                await this.syncEndpoints();
+                // sync new devices when added or removed
+                if (status === DeviceMixinStatus.Setup)
+                    await this.syncEndpoints();
 
-            if (status === DeviceMixinStatus.Setup || status === DeviceMixinStatus.AlreadySetup) {
+                if (status === DeviceMixinStatus.Setup || status === DeviceMixinStatus.AlreadySetup) {
 
-                if (!this.devices.has(eventSource.id)) {
-                    this.devices.set(eventSource.id, eventSource);
-                    eventSource.listen(ScryptedInterface.ObjectDetector, this.deviceListen.bind(this));
+                    if (!this.devices.has(eventSource.id)) {
+                        this.devices.set(eventSource.id, eventSource);
+                        eventSource.listen(ScryptedInterface.ObjectDetector, listen);
+                    }
+
+                    listen(eventSource, eventDetails, eventData);
                 }
-
-                this.deviceListen(eventSource, eventDetails, eventData);
-            }
-        }).bind(this));
+            })().catch(e => this.console.error('Alexa device sync failed', e.message));
+        });
 
         await this.syncEndpoints();
     }
@@ -163,16 +182,19 @@ class AlexaPlugin extends ScryptedDeviceBase implements HttpRequestHandler, Mixi
 
     async releaseMixin(id: string, mixinDevice: any): Promise<void> {
         const device = systemManager.getDeviceById(id);
-        const mixins = (device.mixins || []).slice();
+        const mixins = (device?.mixins || []).slice();
         if (mixins.includes(this.id))
             return;
 
-        this.log.i(`Device removed from Alexa: ${device.name}. Requesting sync.`);
+        this.log.i(`Device removed from Alexa: ${device?.name || id}. Requesting sync.`);
         await this.syncEndpoints();
     }
 
     async deviceListen(eventSource: ScryptedDevice | undefined, eventDetails: EventDetails, eventData: any): Promise<void> {
         if (!eventSource)
+            return;
+
+        if (!eventSource.mixins?.includes(this.id))
             return;
 
         if (!this.storageSettings.values.syncedDevices.includes(eventSource.id))
@@ -272,32 +294,69 @@ class AlexaPlugin extends ScryptedDeviceBase implements HttpRequestHandler, Mixi
             this.storageSettings.values.apiEndpoint = endpoint;
             return endpoint;
         } catch (err) {
-            this.console.error(err);
+            this.console.warn('Unable to determine Alexa region', err?.response?.status);
 
             // default to NA/RoW endpoint if we can't get the endpoint.
             return this.endpoints[0];
         }
     }
 
+    private clearCredentials() {
+        this.tokenGeneration++;
+        this.accessToken = undefined;
+        this.storageSettings.values.tokenInfo = undefined;
+        this.storageSettings.values.apiEndpoint = undefined;
+    }
+
     async postEvent(data: any) {
-        const accessToken = await this.getAccessToken();
-        const endpoint = await this.getAlexaEndpoint();
-        const self = this;
+        const generation = this.tokenGeneration;
+        let refreshed = false;
+        let retries = 0;
 
-        debug("send event to alexa", data);
+        while (true) {
+            if (generation !== this.tokenGeneration)
+                throw new Error('Alexa authorization changed while sending an event');
+            const tokenPromise = this.getAccessToken();
+            const accessToken = await tokenPromise;
+            const endpoint = await this.getAlexaEndpoint();
+            if (generation !== this.tokenGeneration)
+                throw new Error('Alexa authorization changed while sending an event');
 
-        return axios.post(`https://${endpoint}/v3/events`, data, {
-            headers: {
-                'Authorization': 'Bearer ' + accessToken,
+            // Refresh the token in both the HTTP header and the event's scope on every attempt.
+            const event = { ...data.event };
+            if (event.endpoint?.scope)
+                event.endpoint = { ...event.endpoint, scope: { ...event.endpoint.scope, token: accessToken } };
+            if (event.payload?.scope)
+                event.payload = { ...event.payload, scope: { ...event.payload.scope, token: accessToken } };
+
+            try {
+                return await axios.post(`https://${endpoint}/v3/events`, { ...data, event }, {
+                    headers: { 'Authorization': 'Bearer ' + accessToken },
+                    timeout: 10000,
+                });
             }
-        }).catch(error => {
-            self.console.error(error?.response?.data);
-
-            if (error?.response?.status === 401 || error?.response?.status === 403) {
-                self.storageSettings.values.tokenInfo = undefined;
-                self.accessToken = undefined;
+            catch (error) {
+                if (generation !== this.tokenGeneration)
+                    throw new Error('Alexa authorization changed while sending an event');
+                const status = error?.response?.status;
+                const code = error?.response?.data?.payload?.code;
+                if (status === 401 && !refreshed) {
+                    // A delayed 401 must not invalidate a newer refresh started by another event.
+                    if (this.accessToken === tokenPromise)
+                        this.accessToken = undefined;
+                    refreshed = true;
+                    continue;
+                }
+                if (status === 403 && code === 'SKILL_DISABLED_EXCEPTION')
+                    this.clearCredentials();
+                else if ((!error?.response || status === 429 || status >= 500) && retries < 3) {
+                    await new Promise(resolve => setTimeout(resolve, 1000 * 2 ** retries++));
+                    continue;
+                }
+                // Axios errors contain request headers and tokens; never propagate them to logs.
+                throw new Error(`Alexa event delivery failed (HTTP ${status || 'unavailable'})`);
             }
-        });
+        }
     }
 
     async getEndpoints(): Promise<DiscoveryEndpoint[]> {
@@ -317,76 +376,68 @@ class AlexaPlugin extends ScryptedDeviceBase implements HttpRequestHandler, Mixi
         return endpoints;
     }
 
+    private queueEndpointSync(action: () => Promise<void>): Promise<void> {
+        const pending = this.endpointSync.then(action);
+        // Keep later syncs usable after a failure, while returning that failure to the caller.
+        this.endpointSync = pending.catch(() => {});
+        return pending;
+    }
+
     async onDiscoverEndpoints(request: HttpRequest, response: AlexaHttpResponse, directive: any) {
-        const endpoints = await this.getEndpoints();
-
-        const data = {
-            "event": {
-                "header": {
-                    "namespace": 'Alexa.Discovery',
-                    "name": 'Discover.Response',
-                    "payloadVersion": '3',
-                    "messageId": createMessageId()
+        return this.queueEndpointSync(async () => {
+            const endpoints = await this.getEndpoints();
+            const data: Discovery = {
+                event: {
+                    header: {
+                        namespace: 'Alexa.Discovery',
+                        name: 'Discover.Response',
+                        payloadVersion: '3',
+                        messageId: createMessageId(),
+                    },
+                    payload: { endpoints },
                 },
-                "payload": {
-                    endpoints
-                }
-            }
-        } as Discovery;
-
-        response.send(data);
-
-        await this.saveEndpoints(endpoints);
+            };
+            response.send(data);
+            await this.saveEndpoints(endpoints);
+        });
     }
 
     async syncEndpoints() {
-        const endpoints = await this.getEndpoints();
-
-        if (!endpoints.length)
-            return [];
-
-        const accessToken = await this.getAccessToken();
-        const data = {
-            "event": {
-                "header": {
-                    "namespace": "Alexa.Discovery",
-                    "name": "AddOrUpdateReport",
-                    "payloadVersion": "3",
-                    "messageId": createMessageId()
-                },
-                "payload": {
-                    endpoints,
-                    "scope": {
-                        "type": "BearerToken",
-                        "token": accessToken,
-                    }
-                }
+        return this.queueEndpointSync(async () => {
+            const endpoints = await this.getEndpoints();
+            if (endpoints.length) {
+                const accessToken = await this.getAccessToken();
+                await this.postEvent({
+                    event: {
+                        header: {
+                            namespace: 'Alexa.Discovery',
+                            name: 'AddOrUpdateReport',
+                            payloadVersion: '3',
+                            messageId: createMessageId(),
+                        },
+                        payload: {
+                            endpoints,
+                            scope: { type: 'BearerToken', token: accessToken },
+                        },
+                    },
+                });
             }
-        };
-
-        await this.postEvent(data);
-
-        await this.saveEndpoints(endpoints);
+            // Even an empty discovery needs to remove previously synced endpoints.
+            await this.saveEndpoints(endpoints);
+        });
     }
 
     async saveEndpoints(endpoints: DiscoveryEndpoint[]) {
+        const generation = this.tokenGeneration;
         const existingEndpoints: string[] = this.storageSettings.values.syncedDevices;
         const newEndpoints = endpoints.map(endpoint => endpoint.endpointId);
-        const deleted = new Set(existingEndpoints);
+        const deleted = existingEndpoints.filter(id => !newEndpoints.includes(id));
 
-        for (const id of newEndpoints) {
-            deleted.delete(id);
-        }
-
-        const all = new Set([...existingEndpoints, ...newEndpoints]);
-
-        // save all the endpoints
-        this.storageSettings.values.syncedDevices = [...all];
-
-        // delete leftover endpoints
+        // Retain pending deletions across failures and plugin restarts.
+        this.storageSettings.values.syncedDevices = [...new Set([...existingEndpoints, ...newEndpoints])];
         await this.deleteEndpoints(...deleted);
-
-        // prune if the delete report completed successfully
+        if (generation !== this.tokenGeneration)
+            throw new Error('Alexa authorization changed while syncing endpoints');
         this.storageSettings.values.syncedDevices = newEndpoints;
     }
 
@@ -426,81 +477,70 @@ class AlexaPlugin extends ScryptedDeviceBase implements HttpRequestHandler, Mixi
             return this.accessToken;
 
         this.log.clearAlerts();
-
         const { tokenInfo } = this.storageSettings.values;
-
         if (tokenInfo === undefined) {
             this.setReauthenticateAlert();
             throw new Error("'tokenInfo' is undefined");
         }
 
-        const { code } = tokenInfo;
-
         const body: Record<string, string> = {
             client_id,
-            client_secret
+            client_secret,
         };
-        if (code) {
-            body.code = code;
+        if (tokenInfo.code) {
+            body.code = tokenInfo.code;
             body.grant_type = 'authorization_code';
         }
         else {
-            const { refresh_token } = tokenInfo;
-            body.refresh_token = refresh_token;
+            body.refresh_token = tokenInfo.refresh_token;
             body.grant_type = 'refresh_token';
         }
 
-        const self = this;
-
+        const generation = this.tokenGeneration;
         const accessTokenPromise = (async () => {
-            const response = await axios.post('https://api.amazon.com/auth/o2/token', new URLSearchParams(body).toString(), {
-                headers: {
-                    'Content-Type': 'application/x-www-form-urlencoded',
+            let response;
+            try {
+                response = await axios.post('https://api.amazon.com/auth/o2/token', new URLSearchParams(body).toString(), {
+                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                    timeout: 10000,
+                });
+            }
+            catch (error) {
+                // A failed old exchange must never discard credentials from a newer grant.
+                if (generation === this.tokenGeneration && error?.response?.data?.error === 'invalid_grant') {
+                    this.clearCredentials();
+                    this.setReauthenticateAlert();
                 }
-            }).catch(error => {
-                switch (error?.response?.data?.error) {
-                    case 'invalid_client':
-                    case 'invalid_grant':
-                    case 'unauthorized_client':
-                        self.console.error(error?.response?.data);
-                        self.log.a(error?.response?.data?.error_description);
-                        self.storageSettings.values.tokenInfo = undefined;
-                        self.accessToken = undefined;
-                        break;
-
-                    case 'authorization_pending':
-                        self.console.warn(error?.response?.data);
-                        self.log.a(error?.response?.data?.error_description);
-                        break;
-
-                    case 'expired_token':
-                        self.console.warn(error?.response?.data);
-                        self.log.a(error?.response?.data?.error_description);
-                        self.accessToken = undefined;
-                        break;
-
-                    default:
-                        self.console.error(error?.response?.data);
-                }
-                throw error;
-            });
-            // expires_in is 1 hr
+                // Preserve refresh credentials for network failures and client configuration errors.
+                throw new Error(`Alexa token exchange failed (HTTP ${error?.response?.status || 'unavailable'})`);
+            }
+            if (generation !== this.tokenGeneration)
+                throw new Error('Alexa authorization changed during token exchange');
             const { access_token, expires_in } = response.data;
-            this.storageSettings.values.tokenInfo = response.data;
+            if (typeof access_token !== 'string' || !access_token || !Number.isFinite(expires_in) || expires_in <= 0)
+                throw new Error('Alexa token exchange returned an invalid response');
+            this.storageSettings.values.tokenInfo = {
+                ...response.data,
+                refresh_token: response.data.refresh_token || tokenInfo.refresh_token,
+            };
             setTimeout(() => {
                 if (this.accessToken === accessTokenPromise)
                     this.accessToken = undefined;
-            }, (expires_in - 300) * 1000);
+            }, Math.max(0, expires_in - 300) * 1000);
             return access_token;
         })();
 
         this.accessToken = accessTokenPromise;
-        this.accessToken.catch(() => this.accessToken = undefined);
-        return this.accessToken;
+        accessTokenPromise.catch(() => {
+            if (this.accessToken === accessTokenPromise)
+                this.accessToken = undefined;
+        });
+        return accessTokenPromise;
     }
 
     async onAlexaAuthorization(request: HttpRequest, response: AlexaHttpResponse, directive: any) {
         const { grant } = directive.payload;
+        const generation = ++this.tokenGeneration;
         this.storageSettings.values.tokenInfo = grant;
         this.storageSettings.values.apiEndpoint = undefined;
         this.accessToken = undefined;
@@ -514,9 +554,8 @@ class AlexaPlugin extends ScryptedDeviceBase implements HttpRequestHandler, Mixi
         catch (reason) {
             self.console.error(`Failed to handle the AcceptGrant directive because ${reason}`);
 
-            this.storageSettings.values.tokenInfo = undefined;
-            this.storageSettings.values.apiEndpoint = undefined;
-            this.accessToken = undefined;
+            if (generation === this.tokenGeneration)
+                this.clearCredentials();
 
             response.send(authErrorResponse("ACCEPT_GRANT_FAILED", `Failed to handle the AcceptGrant directive because ${reason}`, directive));
 
@@ -613,36 +652,47 @@ class AlexaPlugin extends ScryptedDeviceBase implements HttpRequestHandler, Mixi
         const { directive } = body;
         const { namespace, name } = directive.header;
 
-        const { authorization } = request.headers;
-        if (!this.validAuths.has(authorization)) {
-            try {
-                debug("making authorization request to Scrypted");
-
-                const getcookieResponse = await axios.get('https://home.scrypted.app/_punch/getcookie', {
-                    headers: {
-                        'Authorization': authorization,
-                    }
-                });
-                // new tokens will contain a lot of information, including the expiry and client id.
-                // validate this. old tokens will be grandfathered in.
-                if (getcookieResponse.data.expiry && getcookieResponse.data.clientId !== 'amazon')
-                    throw new Error('client id mismatch');
-                if (!this.storageSettings.values.pairedUserId) {
-                    this.storageSettings.values.pairedUserId = getcookieResponse.data.id;
-                }
-                else if (this.storageSettings.values.pairedUserId !== getcookieResponse.data.id) {
-                    this.log.a('This plugin is already paired with a different account. Clear the existing key in the plugin settings to pair this plugin with a different account.');
-                    throw new Error('user id mismatch');
-                }
-                this.validAuths.add(authorization);
+        try {
+            const { authorization } = request.headers;
+            if (typeof authorization !== 'string' || !authorization)
+                throw new Error('Missing authorization');
+            const generation = this.authorizationGeneration;
+            // Revalidate every directive so revocation and pairing changes cannot bypass checks.
+            const { data } = await axios.get('https://home.scrypted.app/_punch/getcookie', {
+                headers: { 'Authorization': authorization },
+                timeout: 10000,
+            });
+            if (generation !== this.authorizationGeneration)
+                throw new Error('Pairing changed during authorization');
+            if (data.expiry != null) {
+                // Accept epoch seconds, epoch milliseconds, or an ISO timestamp from the cloud.
+                const numericExpiry = Number(data.expiry);
+                const expiry = Number.isFinite(numericExpiry)
+                    ? numericExpiry * (numericExpiry < 1e12 ? 1000 : 1)
+                    : Date.parse(data.expiry);
+                if (!Number.isFinite(expiry) || expiry <= Date.now())
+                    throw new Error('Expired authorization');
             }
-            catch (e) {
-                this.console.error(`request failed due to invalid authorization`, e);
-                // Alexa expects a v3 ErrorResponse rather than a raw HTTP error, otherwise
-                // the directive is retried and surfaces to the user as a generic skill failure.
-                response.send(authErrorResponse("INVALID_AUTHORIZATION_CREDENTIAL", `Unable to authorize the request: ${e.message}`, directive));
-                return;
+            if (!data.id || typeof data.id !== 'string')
+                throw new Error('Missing account identity');
+            // Legacy tokens lack client metadata; modern tokens must belong to Alexa.
+            if ((data.expiry || data.clientId) && data.clientId !== 'amazon')
+                throw new Error('Client id mismatch');
+            if (!this.storageSettings.values.pairedUserId)
+                this.storageSettings.values.pairedUserId = data.id;
+            else if (this.storageSettings.values.pairedUserId !== data.id) {
+                this.log.a('This plugin is already paired with a different account. Clear the existing key in the plugin settings to pair this plugin with a different account.');
+                throw new Error('User id mismatch');
             }
+        }
+        catch (e) {
+            // Do not log Axios errors: their request configuration includes the bearer token.
+            this.console.warn('Request rejected: Alexa authorization could not be validated');
+            response.send(authErrorResponse('INVALID_AUTHORIZATION_CREDENTIAL', 'Unable to authorize the request', {
+                ...directive,
+                header: { ...directive.header, namespace: 'Alexa', payloadVersion: '3' },
+            }));
+            return;
         }
 
         const mapName = `${namespace}/${name}`;
