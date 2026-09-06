@@ -42,8 +42,9 @@ export async function reportCameraState(device: ScryptedDevice & MotionSensor & 
 export async function sendCameraEvent (eventSource: ScryptedDevice & MotionSensor & ObjectDetector, eventDetails, eventData): Promise<Partial<Report>> {      
     if (eventDetails.eventInterface === ScryptedInterface.ObjectDetector) {
 
-        // ring and motion are not valid objects
-        if (eventData.detections.has('ring') || eventData.detections.has('motion'))
+        // ring and motion are not valid objects, but may accompany valid detections.
+        const detections = eventData.detections?.filter(detection => detection.className !== 'ring' && detection.className !== 'motion');
+        if (!detections?.length)
             return undefined;
 
         console.debug('ObjectDetector event', eventData);
@@ -63,7 +64,7 @@ export async function sendCameraEvent (eventSource: ScryptedDevice & MotionSenso
                     name: 'ObjectDetection'
                 },
                 payload: {
-                    "events": eventData.detections.map(detection => {
+                    "events": detections.map(detection => {
                         let event = {
                             "eventIdentifier": eventData.eventId,
                             "imageNetClass": detection.className,
@@ -176,25 +177,25 @@ export async function getCameraCapabilities(device: ScryptedDevice): Promise<Dis
                 } as DiscoveryCapability
             );
         }
-    
-        if (device.interfaces.includes(ScryptedInterface.MotionSensor)) {
-            capabilities.push(
-                {
-                    "type": "AlexaInterface",
-                    "interface": "Alexa.MotionSensor",
-                    "version": "3",
-                    "properties": {
-                        "supported": [
-                            {
-                                "name": "detectionState"
-                            }
-                        ],
-                        "proactivelyReported": true,
-                        "retrievable": true
-                    }
-                } as DiscoveryCapability
-            );
-        }
+    }
+
+    if (device.interfaces.includes(ScryptedInterface.MotionSensor)) {
+        capabilities.push(
+            {
+                "type": "AlexaInterface",
+                "interface": "Alexa.MotionSensor",
+                "version": "3",
+                "properties": {
+                    "supported": [
+                        {
+                            "name": "detectionState"
+                        }
+                    ],
+                    "proactivelyReported": true,
+                    "retrievable": true
+                }
+            } as DiscoveryCapability
+        );
     }
 
     return capabilities;
