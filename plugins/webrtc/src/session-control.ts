@@ -9,7 +9,6 @@ const { mediaManager } = sdk;
 
 function getTalkbackCodec(transceiver: RTCRtpTransceiver) {
     const codec = transceiver.receiver.track?.codec
-        ?? transceiver.sender?.codec
         ?? transceiver.codecs?.[0];
     const mimeType = codec?.mimeType?.toLowerCase() ?? '';
 
