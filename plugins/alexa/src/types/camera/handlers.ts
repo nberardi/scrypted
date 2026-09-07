@@ -1,7 +1,7 @@
 import { ObjectDetector, RTCAVSignalingSetup, RTCSessionControl, RTCSignalingChannel, RTCSignalingOptions, RTCSignalingSendIceCandidate, RTCSignalingSession, ScryptedDevice } from "@scrypted/sdk";
 import { supportedTypes } from "..";
 import { v4 as createMessageId } from 'uuid';
-import { AlexaHttpResponse, sendDeviceResponse } from "../../common";
+import { AlexaHttpResponse, deviceErrorResponse, sendDeviceResponse } from "../../common";
 import { alexaDeviceHandlers } from "../../handlers";
 import { Response, WebRTCAnswerGeneratedForSessionEvent, WebRTCSessionConnectedEvent, WebRTCSessionDisconnectedEvent } from '../../alexa'
 import { Deferred } from '@scrypted/common/src/deferred';
@@ -197,4 +197,15 @@ alexaDeviceHandlers.set('Alexa.SmartVision.ObjectDetectionSensor/SetObjectDetect
     data.event.header.messageId = createMessageId();
 
     sendDeviceResponse(data, response, device);
+});
+
+// Cameras already discovered with Alexa.DataController still send these directives.
+// Events are not persisted, so reject with the DataController error types Alexa expects
+// (namespace Alexa.DataController, name ErrorResponse, payloadVersion 1.0).
+alexaDeviceHandlers.set('Alexa.DataController/ReportData', async (request, response, directive: any, device: ScryptedDevice) => {
+    response.send(deviceErrorResponse("DATA_RETRIEVAL_NOT_SUPPORTED", "Detection event retrieval is not supported.", directive));
+});
+
+alexaDeviceHandlers.set('Alexa.DataController/DeleteData', async (request, response, directive: any, device: ScryptedDevice) => {
+    response.send(deviceErrorResponse("DATA_DELETION_NOT_SUPPORTED", "Detection event deletion is not supported.", directive));
 });
