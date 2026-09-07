@@ -124,18 +124,39 @@ alexaDeviceHandlers.set('Alexa.RTCSessionController/InitiateSessionWithOffer', a
 
     const session = new AlexaSignalingSession(response, directive);
     let control: RTCSessionControl | undefined;
+    let failed = false;
+    session.remoteDescription.promise.catch(() => {});
 
     try {
-        control = await device.startRTCSignalingSession(session);
-        control.setPlayback({
-            audio: true,
-            video: false,
-        });
-        // Alexa requires an SDP answer within 6 seconds.
-        await timeoutPromise(6000, session.remoteDescription.promise);
+        // Alexa requires an SDP answer within 6 seconds of InitiateSessionWithOffer.
+        const negotiation = (async () => {
+            control = await device.startRTCSignalingSession(session);
+            if (failed) {
+                if (control) {
+                    try {
+                        await control.endSession();
+                    }
+                    catch {
+                    }
+                }
+                return;
+            }
+            control.setPlayback({
+                audio: true,
+                video: false,
+            });
+            await session.remoteDescription.promise;
+        })();
+        await timeoutPromise(6000, negotiation);
         sessionCache.set(sessionId, control);
     }
-    catch {
+    catch (e) {
+        failed = true;
+        console.error('Alexa RTC InitiateSessionWithOffer failed', e);
+
+        if (!session.remoteDescription.finished)
+            session.remoteDescription.reject(e instanceof Error ? e : new Error(String(e)));
+
         if (!session.responded) {
             session.responded = true;
             const data = deviceErrorResponse("INTERNAL_ERROR", "Unable to generate an SDP answer for the RTC session.", directive);
