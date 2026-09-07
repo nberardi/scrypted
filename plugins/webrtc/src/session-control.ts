@@ -7,6 +7,20 @@ import sdk, { FFmpegInput, Intercom, MediaObject, RTCSessionControl } from "@scr
 
 const { mediaManager } = sdk;
 
+function getTalkbackCodec(transceiver: RTCRtpTransceiver) {
+    const codec = transceiver.receiver.track?.codec
+        ?? transceiver.sender?.codec
+        ?? transceiver.codecs?.[0];
+    const mimeType = codec?.mimeType?.toLowerCase() ?? '';
+
+    if (mimeType === 'audio/pcmu')
+        return { payloadType: 0, rtpmap: 'PCMU/8000' };
+    if (mimeType === 'audio/pcma')
+        return { payloadType: 8, rtpmap: 'PCMA/8000' };
+    // default opus so existing cameras keep working when negotiation is missing/unknown
+    return { payloadType: 110, rtpmap: 'opus/48000/2' };
+}
+
 export class ScryptedSessionControl implements RTCSessionControl {
     rtspServer: RtspServer;
     killed = new Deferred<void>();
@@ -67,6 +81,7 @@ export class ScryptedSessionControl implements RTCSessionControl {
 
         const mo = await mediaManager.createFFmpegMediaObject(ffmpegInput);
         rtspTcpServer.clientPromise.then(async client => {
+            const { payloadType, rtpmap } = getTalkbackCodec(this.audioTransceiver);
             const sdpReturnAudio = [
                 "v=0",
                 "o=- 0 0 IN IP4 127.0.0.1",
@@ -74,18 +89,11 @@ export class ScryptedSessionControl implements RTCSessionControl {
                 "c=IN IP4 127.0.0.1",
                 "t=0 0",
                 "b=AS:24",
-
-                // HACK, this may not be opus
-                "m=audio 0 RTP/AVP 110",
-                "a=rtpmap:110 opus/48000/2",
-                "a=fmtp:101 minptime=10;useinbandfec=1",
-
-                // "m=audio 0 RTP/AVP 0",
-                // "a=rtpmap:0 PCMU/8000",
-
-                // "m=audio 0 RTP/AVP 8",
-                // "a=rtpmap:8 PCMA/8000",
+                `m=audio 0 RTP/AVP ${payloadType}`,
+                `a=rtpmap:${payloadType} ${rtpmap}`,
             ];
+            if (payloadType === 110)
+                sdpReturnAudio.push("a=fmtp:101 minptime=10;useinbandfec=1");
             let sdp = sdpReturnAudio.join('\r\n');
             sdp = createSdpInput(0, 0, sdp);
 
@@ -98,7 +106,7 @@ export class ScryptedSessionControl implements RTCSessionControl {
             const audioTrack = parsedSdp.msections.find(msection => msection.type === 'audio').control;
 
             track.onReceiveRtp.subscribe(rtpPacket => {
-                rtpPacket.header.payloadType = 110;
+                rtpPacket.header.payloadType = payloadType;
                 rtspServer.sendTrack(audioTrack, rtpPacket.serialize(), false);
             });
         });
