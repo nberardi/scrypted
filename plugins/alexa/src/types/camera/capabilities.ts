@@ -4,6 +4,16 @@ import { ChangeReport, DiscoveryCapability, ObjectDetectionEvent, Report, StateR
 
 const { mediaManager } = sdk;
 
+// Amazon SmartVision imageNetClass only accepts person and package.
+const SMARTVISION_IMAGE_NET_CLASSES = new Set(['person', 'package']);
+
+function toSmartVisionImageNetClass(className: string | undefined) {
+    if (!className)
+        return;
+    const normalized = className.toLowerCase();
+    return SMARTVISION_IMAGE_NET_CLASSES.has(normalized) ? normalized : undefined;
+}
+
 export async function reportCameraState(device: ScryptedDevice & MotionSensor & ObjectDetector): Promise<Partial<Report>>{
     let data = {
         context: {
@@ -11,21 +21,6 @@ export async function reportCameraState(device: ScryptedDevice & MotionSensor & 
         }
         
     } as Partial<StateReport>;
-
-    if (device.interfaces.includes(ScryptedInterface.ObjectDetector)) {
-        const detectionTypes = await (device as any as ObjectDetector).getObjectTypes();
-        const classNames = detectionTypes.classes.filter(t => t !== 'ring' && t !== 'motion').map(type => type.toLowerCase());
-
-        data.context.properties.push({
-            "namespace": "Alexa.SmartVision.ObjectDetectionSensor",
-            "name": "objectDetectionClasses",
-            "value": classNames.map(type => ({
-                "imageNetClass": type
-            })),
-            "timeOfSample": new Date().toISOString(),
-            "uncertaintyInMilliseconds": 0
-        });
-    }
 
     if (device.interfaces.includes(ScryptedInterface.MotionSensor)) {
         data.context.properties.push({
@@ -44,7 +39,8 @@ export async function sendCameraEvent (eventSource: ScryptedDevice & MotionSenso
     if (eventDetails.eventInterface === ScryptedInterface.ObjectDetector) {
 
         // ring and motion are not valid objects, but may accompany valid detections.
-        const detections = eventData.detections?.filter(detection => detection.className !== 'ring' && detection.className !== 'motion');
+        // Amazon SmartVision only accepts person and package imageNetClass values.
+        const detections = eventData.detections?.filter(detection => detection.className !== 'ring' && detection.className !== 'motion' && toSmartVisionImageNetClass(detection.className));
         if (!detections?.length)
             return undefined;
 
@@ -68,7 +64,7 @@ export async function sendCameraEvent (eventSource: ScryptedDevice & MotionSenso
                     "events": detections.map(detection => {
                         let event = {
                             "eventIdentifier": createMessageId(),
-                            "imageNetClass": detection.className,
+                            "imageNetClass": toSmartVisionImageNetClass(detection.className),
                             "timeOfSample": new Date(eventData.timestamp).toISOString(),
                             "uncertaintyInMilliseconds": 500
                         };
@@ -135,20 +131,14 @@ export async function getCameraCapabilities(device: ScryptedDevice): Promise<Dis
 
     if (device.interfaces.includes(ScryptedInterface.ObjectDetector)) {
         const detectionTypes = await (device as any as ObjectDetector).getObjectTypes().catch(() => {}) || undefined;
-        const classNames = detectionTypes?.classes?.filter(t => t !== 'ring' && t !== 'motion').map(type => type.toLowerCase()).filter(c => !!c);
+        const classNames = detectionTypes?.classes?.map(toSmartVisionImageNetClass).filter(c => !!c);
         if (classNames?.length) {
             capabilities.push(
                 {
                     "type": "AlexaInterface",
                     "interface": "Alexa.SmartVision.ObjectDetectionSensor",
                     "version": "1.0",
-                    "properties": {
-                        "supported": [{
-                            "name": "objectDetectionClasses"
-                        }],
-                        "proactivelyReported": true,
-                        "retrievable": true
-                    },
+                    "properties": {},
                     "configuration": {
                         "objectDetectionConfiguration": classNames.map(type => ({
                             "imageNetClass": type
