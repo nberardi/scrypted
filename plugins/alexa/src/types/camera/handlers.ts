@@ -160,9 +160,11 @@ alexaDeviceHandlers.set('Alexa.RTCSessionController/InitiateSessionWithOffer', a
             await session.remoteDescription.promise;
         })();
         await timeoutPromise(6000, negotiation);
-        // Reused sessionIds overwrite the cache; end the previous stream first so it does not leak.
-        await uncacheAndEndSession(sessionId);
+        // Swap before ending so SessionDisconnected always finds the live control
+        // and a hung previous endSession cannot block or skip the cache insert.
+        const previous = sessionCache.get(sessionId);
         sessionCache.set(sessionId, control);
+        await endRtcSession(previous);
     }
     catch (e) {
         failed = true;
