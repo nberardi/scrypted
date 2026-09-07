@@ -1,4 +1,5 @@
 import sdk, { MediaObject, MotionSensor, ObjectDetector, ScryptedDevice, ScryptedInterface } from "@scrypted/sdk";
+import { v4 as createMessageId } from 'uuid';
 import { ChangeReport, DiscoveryCapability, ObjectDetectionEvent, Report, StateReport, Property } from "../../alexa";
 
 const { mediaManager } = sdk;
@@ -53,7 +54,7 @@ export async function sendCameraEvent (eventSource: ScryptedDevice & MotionSenso
         let frameImageUri: string = undefined;
 
         try {
-            mediaObj = await eventSource.getDetectionInput(eventData.detectionId, eventData.eventId);
+            mediaObj = await eventSource.getDetectionInput(eventData.detectionId, eventDetails.eventId);
             frameImageUri = await mediaManager.convertMediaObjectToUrl(mediaObj, 'image/jpeg');
         } catch (e) { }
 
@@ -66,7 +67,7 @@ export async function sendCameraEvent (eventSource: ScryptedDevice & MotionSenso
                 payload: {
                     "events": detections.map(detection => {
                         let event = {
-                            "eventIdentifier": eventData.eventId,
+                            "eventIdentifier": createMessageId(),
                             "imageNetClass": detection.className,
                             "timeOfSample": new Date(eventData.timestamp).toISOString(),
                             "uncertaintyInMilliseconds": 500
