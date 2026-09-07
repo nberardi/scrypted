@@ -146,27 +146,8 @@ export async function getCameraCapabilities(device: ScryptedDevice): Promise<Dis
                     }
                 } as DiscoveryCapability
             );
-    
-            capabilities.push(
-                {
-                    "type": "AlexaInterface",
-                    "interface": "Alexa.DataController",
-                    "instance": "Camera.SmartVisionData",
-                    "version": "1.0",
-                    "properties": undefined,
-                    "configuration": {
-                        "targetCapability": {
-                            "name": "Alexa.SmartVision.ObjectDetectionSensor",
-                            "version": "1.0"
-                        },
-                        "dataRetrievalSchema": {
-                            "type": "JSON",
-                            "schema": "SmartVisionData"
-                        },
-                        "supportedAccess": ["BY_IDENTIFIER", "BY_TIMESTAMP_RANGE"]
-                    }
-                } as DiscoveryCapability
-            );
+            // Detection events are not persisted, so do not advertise Alexa.DataController
+            // (BY_IDENTIFIER / BY_TIMESTAMP_RANGE retrieval would be unimplemented).
         }
     }
 
