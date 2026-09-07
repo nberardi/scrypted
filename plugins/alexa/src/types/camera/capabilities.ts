@@ -3,6 +3,50 @@ import { ChangeReport, DiscoveryCapability, ObjectDetectionEvent, Report, StateR
 
 const { mediaManager } = sdk;
 
+const VALID_OBJECT_DETECTION_CLASSES = new Set<string>(['person', 'package']);
+const DEFAULT_OBJECT_DETECTION_CLASSES = ['person', 'package'];
+
+const enabledObjectDetectionClasses = new Map<string, Set<string>>();
+let persistObjectDetectionClasses: ((value: Record<string, string[]>) => void) | undefined;
+
+function normalizeObjectDetectionClasses(classes: Iterable<string> | undefined): Set<string> {
+    const result = new Set<string>();
+    if (!classes)
+        return result;
+    for (const cls of classes) {
+        const imageNetClass = typeof cls === 'string' ? cls.toLowerCase() : undefined;
+        if (imageNetClass && VALID_OBJECT_DETECTION_CLASSES.has(imageNetClass))
+            result.add(imageNetClass);
+    }
+    return result;
+}
+
+export function setObjectDetectionClassesPersistence(saved: Record<string, string[]> | undefined, persist?: (value: Record<string, string[]>) => void) {
+    persistObjectDetectionClasses = persist;
+    enabledObjectDetectionClasses.clear();
+    if (!saved || typeof saved !== 'object')
+        return;
+    for (const [deviceId, classes] of Object.entries(saved)) {
+        if (!deviceId)
+            continue;
+        enabledObjectDetectionClasses.set(deviceId, normalizeObjectDetectionClasses(Array.isArray(classes) ? classes : []));
+    }
+}
+
+export function getEnabledObjectDetectionClasses(deviceId: string): Set<string> {
+    return enabledObjectDetectionClasses.get(deviceId) ?? new Set(DEFAULT_OBJECT_DETECTION_CLASSES);
+}
+
+export function setEnabledObjectDetectionClasses(deviceId: string, classes: string[]) {
+    enabledObjectDetectionClasses.set(deviceId, normalizeObjectDetectionClasses(classes));
+    if (!persistObjectDetectionClasses)
+        return;
+    const saved: Record<string, string[]> = {};
+    for (const [id, enabled] of enabledObjectDetectionClasses)
+        saved[id] = [...enabled];
+    persistObjectDetectionClasses(saved);
+}
+
 export async function reportCameraState(device: ScryptedDevice & MotionSensor & ObjectDetector): Promise<Partial<Report>>{
     let data = {
         context: {
@@ -43,7 +87,14 @@ export async function sendCameraEvent (eventSource: ScryptedDevice & MotionSenso
     if (eventDetails.eventInterface === ScryptedInterface.ObjectDetector) {
 
         // ring and motion are not valid objects, but may accompany valid detections.
-        const detections = eventData.detections?.filter(detection => detection.className !== 'ring' && detection.className !== 'motion');
+        // Only emit classes the customer enabled via SetObjectDetectionClasses (default: person, package).
+        const enabled = getEnabledObjectDetectionClasses(eventSource.id);
+        const detections = eventData.detections?.filter(detection => {
+            const className = detection.className?.toLowerCase();
+            if (!className || className === 'ring' || className === 'motion')
+                return false;
+            return enabled.has(className);
+        });
         if (!detections?.length)
             return undefined;
 

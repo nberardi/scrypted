@@ -6,6 +6,9 @@ import { alexaDeviceHandlers } from "../../handlers";
 import { Response, WebRTCAnswerGeneratedForSessionEvent, WebRTCSessionConnectedEvent, WebRTCSessionDisconnectedEvent } from '../../alexa'
 import { Deferred } from '@scrypted/common/src/deferred';
 import { timeoutPromise } from '@scrypted/common/src/promise-utils';
+import { setEnabledObjectDetectionClasses } from './capabilities';
+
+export { setObjectDetectionClassesPersistence } from './capabilities';
 
 // Whether Alexa camera sessions are allowed to use TURN relays. Set by the plugin from its
 // storage settings (see main.ts). When true, TURN usage defers to the WebRTC plugin's own
@@ -228,28 +231,22 @@ alexaDeviceHandlers.set('Alexa.SmartVision.ObjectDetectionSensor/SetObjectDetect
         return;
 
     const { header, endpoint, payload } = directive;
-    const detectionTypes = await device.getObjectTypes();
+    const requested = (payload?.objectDetectionClasses || [])
+        .map((item: any) => item?.imageNetClass)
+        .filter((imageNetClass: unknown): imageNetClass is string => typeof imageNetClass === 'string');
+    setEnabledObjectDetectionClasses(device.id, requested);
 
     const data: Response = {
         "event": {
             header,
             endpoint,
             payload: {}
-        },
-        "context": {
-            "properties": [{
-                "namespace": "Alexa.SmartVision.ObjectDetectionSensor",
-                "name": "objectDetectionClasses",
-                "value": detectionTypes.classes.map(type => ({
-                    "imageNetClass": type
-                })),
-                timeOfSample: new Date().toISOString(),
-                uncertaintyInMilliseconds: 0
-            }]
         }
     };
 
+    data.event.header.namespace = "Alexa";
     data.event.header.name = "Response";
+    data.event.header.payloadVersion = "3";
     data.event.header.messageId = createMessageId();
 
     sendDeviceResponse(data, response, device);

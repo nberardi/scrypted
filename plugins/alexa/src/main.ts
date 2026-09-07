@@ -6,7 +6,7 @@ import { supportedTypes } from './types';
 import { v4 as createMessageId } from 'uuid';
 import { ChangeReport, Discovery, DiscoveryEndpoint } from './alexa';
 import { alexaHandlers, alexaDeviceHandlers } from './handlers';
-import { setUseTurnServer } from './types/camera/handlers';
+import { setUseTurnServer, setObjectDetectionClassesPersistence } from './types/camera/handlers';
 
 const { systemManager, deviceManager } = sdk;
 
@@ -69,6 +69,10 @@ class AlexaPlugin extends ScryptedDeviceBase implements HttpRequestHandler, Mixi
                 setUseTurnServer(newValue);
             }
         },
+        objectDetectionClasses: {
+            hide: true,
+            json: true,
+        },
     });
 
     accessToken: Promise<string>;
@@ -80,6 +84,12 @@ class AlexaPlugin extends ScryptedDeviceBase implements HttpRequestHandler, Mixi
 
         DEBUG = this.storageSettings.values.debug ?? false;
         setUseTurnServer(this.storageSettings.values.useTurnServer);
+        setObjectDetectionClassesPersistence(
+            this.storageSettings.values.objectDetectionClasses,
+            value => {
+                this.storageSettings.values.objectDetectionClasses = value;
+            }
+        );
 
         alexaHandlers.set('Alexa.Authorization/AcceptGrant', this.onAlexaAuthorization);
         alexaHandlers.set('Alexa.Discovery/Discover', this.onDiscoverEndpoints);
