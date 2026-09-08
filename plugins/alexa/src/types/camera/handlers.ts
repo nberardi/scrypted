@@ -118,6 +118,24 @@ export class AlexaSignalingSession implements RTCSignalingSession {
 
 const sessionCache = new Map<string, RTCSessionControl>();
 
+async function endRtcSession(control?: RTCSessionControl) {
+    if (!control)
+        return;
+    try {
+        await control.endSession();
+    }
+    catch {
+    }
+}
+
+async function uncacheAndEndSession(sessionId: string) {
+    const control = sessionCache.get(sessionId);
+    if (!control)
+        return;
+    sessionCache.delete(sessionId);
+    await endRtcSession(control);
+}
+
 alexaDeviceHandlers.set('Alexa.RTCSessionController/InitiateSessionWithOffer', async (request, response, directive: any, device: ScryptedDevice & RTCSignalingChannel) => {
     const { payload } = directive;
     const { sessionId } = payload;
@@ -132,13 +150,7 @@ alexaDeviceHandlers.set('Alexa.RTCSessionController/InitiateSessionWithOffer', a
         const negotiation = (async () => {
             control = await device.startRTCSignalingSession(session);
             if (failed) {
-                if (control) {
-                    try {
-                        await control.endSession();
-                    }
-                    catch {
-                    }
-                }
+                await endRtcSession(control);
                 return;
             }
             control.setPlayback({
@@ -148,7 +160,11 @@ alexaDeviceHandlers.set('Alexa.RTCSessionController/InitiateSessionWithOffer', a
             await session.remoteDescription.promise;
         })();
         await timeoutPromise(6000, negotiation);
+        // Swap before ending so SessionDisconnected always finds the live control
+        // and a hung previous endSession cannot block or skip the cache insert.
+        const previous = sessionCache.get(sessionId);
         sessionCache.set(sessionId, control);
+        await endRtcSession(previous);
     }
     catch (e) {
         failed = true;
@@ -166,13 +182,7 @@ alexaDeviceHandlers.set('Alexa.RTCSessionController/InitiateSessionWithOffer', a
             response.send(data);
         }
 
-        if (control) {
-            try {
-                await control.endSession();
-            }
-            catch {
-            }
-        }
+        await endRtcSession(control);
     }
 });
 
@@ -196,11 +206,7 @@ alexaDeviceHandlers.set('Alexa.RTCSessionController/SessionDisconnected', async 
     const { header, endpoint, payload } = directive;
     const { sessionId } = payload;
 
-    const session = sessionCache.get(sessionId);
-    if (session) {
-        sessionCache.delete(sessionId);
-        await session.endSession();
-    }
+    await uncacheAndEndSession(sessionId);
 
     const data: WebRTCSessionDisconnectedEvent = {
         "event": {
