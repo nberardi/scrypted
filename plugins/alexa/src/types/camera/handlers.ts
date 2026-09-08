@@ -5,6 +5,7 @@ import { AlexaHttpResponse, deviceErrorResponse, sendDeviceResponse } from "../.
 import { alexaDeviceHandlers } from "../../handlers";
 import { Response, WebRTCAnswerGeneratedForSessionEvent, WebRTCSessionConnectedEvent, WebRTCSessionDisconnectedEvent } from '../../alexa'
 import { Deferred } from '@scrypted/common/src/deferred';
+import { timeoutPromise } from '@scrypted/common/src/promise-utils';
 
 // Whether Alexa camera sessions are allowed to use TURN relays. Set by the plugin from its
 // storage settings (see main.ts). When true, TURN usage defers to the WebRTC plugin's own
@@ -23,6 +24,7 @@ export class AlexaSignalingSession implements RTCSignalingSession {
     __proxy_props: { options: RTCSignalingOptions; };
     options: RTCSignalingOptions;
     remoteDescription = new Deferred<void>();
+    responded = false;
 
     async getOptions(): Promise<RTCSignalingOptions> {
         return this.options;
@@ -84,6 +86,11 @@ export class AlexaSignalingSession implements RTCSignalingSession {
     }
 
     async setRemoteDescription(description: RTCSessionDescriptionInit, setup: RTCAVSignalingSetup): Promise<void> {
+        // Do not send a second body if timeout/error already responded.
+        if (this.responded || this.remoteDescription.finished)
+            return;
+
+        this.responded = true;
 
         const { header, endpoint, payload } = this.directive;
 
@@ -111,19 +118,72 @@ export class AlexaSignalingSession implements RTCSignalingSession {
 
 const sessionCache = new Map<string, RTCSessionControl>();
 
+async function endRtcSession(control?: RTCSessionControl) {
+    if (!control)
+        return;
+    try {
+        await control.endSession();
+    }
+    catch {
+    }
+}
+
+async function uncacheAndEndSession(sessionId: string) {
+    const control = sessionCache.get(sessionId);
+    if (!control)
+        return;
+    sessionCache.delete(sessionId);
+    await endRtcSession(control);
+}
+
 alexaDeviceHandlers.set('Alexa.RTCSessionController/InitiateSessionWithOffer', async (request, response, directive: any, device: ScryptedDevice & RTCSignalingChannel) => {
-    const { header, endpoint, payload } = directive;
+    const { payload } = directive;
     const { sessionId } = payload;
 
     const session = new AlexaSignalingSession(response, directive);
-    const control = await device.startRTCSignalingSession(session);
-    control.setPlayback({
-        audio: true,
-        video: false,
-    });
-    await session.remoteDescription.promise;
+    let control: RTCSessionControl | undefined;
+    let failed = false;
+    session.remoteDescription.promise.catch(() => {});
 
-    sessionCache.set(sessionId, control);
+    try {
+        // Alexa requires an SDP answer within 6 seconds of InitiateSessionWithOffer.
+        const negotiation = (async () => {
+            control = await device.startRTCSignalingSession(session);
+            if (failed) {
+                await endRtcSession(control);
+                return;
+            }
+            control.setPlayback({
+                audio: true,
+                video: false,
+            });
+            await session.remoteDescription.promise;
+        })();
+        await timeoutPromise(6000, negotiation);
+        // Swap before ending so SessionDisconnected always finds the live control
+        // and a hung previous endSession cannot block or skip the cache insert.
+        const previous = sessionCache.get(sessionId);
+        sessionCache.set(sessionId, control);
+        await endRtcSession(previous);
+    }
+    catch (e) {
+        failed = true;
+        console.error('Alexa RTC InitiateSessionWithOffer failed', e);
+
+        if (!session.remoteDescription.finished)
+            session.remoteDescription.reject(e instanceof Error ? e : new Error(String(e)));
+
+        if (!session.responded) {
+            session.responded = true;
+            const data = deviceErrorResponse("INTERNAL_ERROR", "Unable to generate an SDP answer for the RTC session.", directive);
+            // ErrorResponse for this directive must use namespace Alexa, not RTCSessionController.
+            data.event.header.namespace = "Alexa";
+            data.event.header.payloadVersion = "3";
+            response.send(data);
+        }
+
+        await endRtcSession(control);
+    }
 });
 
 alexaDeviceHandlers.set('Alexa.RTCSessionController/SessionConnected', async (request, response, directive: any, device: ScryptedDevice) => {
@@ -146,11 +206,7 @@ alexaDeviceHandlers.set('Alexa.RTCSessionController/SessionDisconnected', async 
     const { header, endpoint, payload } = directive;
     const { sessionId } = payload;
 
-    const session = sessionCache.get(sessionId);
-    if (session) {
-        sessionCache.delete(sessionId);
-        await session.endSession();
-    }
+    await uncacheAndEndSession(sessionId);
 
     const data: WebRTCSessionDisconnectedEvent = {
         "event": {

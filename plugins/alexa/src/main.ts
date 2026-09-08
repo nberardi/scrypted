@@ -198,13 +198,17 @@ class AlexaPlugin extends ScryptedDeviceBase implements HttpRequestHandler, Mixi
 
         debug("event", eventDetails.eventInterface, eventDetails.property, eventSource.type);
 
+        const namespace = report?.event?.header?.namespace ?? "Alexa";
+        const payloadVersion = report?.event?.header?.payloadVersion
+            ?? (namespace === "Alexa.SmartVision.ObjectDetectionSensor" || namespace === "Alexa.DataController" ? "1.0" : "3");
+
         let data = {
             "event": {
                 "header": {
                     "messageId": createMessageId(),
-                    "namespace": report?.event?.header?.namespace ?? "Alexa",
+                    "namespace": namespace,
                     "name": report?.event?.header?.name ?? "ChangeReport",
-                    "payloadVersion": "3"
+                    "payloadVersion": payloadVersion
                 },
                 "endpoint": {
                     "endpointId": eventSource.id,
@@ -342,8 +346,12 @@ class AlexaPlugin extends ScryptedDeviceBase implements HttpRequestHandler, Mixi
     async syncEndpoints() {
         const endpoints = await this.getEndpoints();
 
-        if (!endpoints.length)
+        if (!endpoints.length) {
+            // Still reconcile deletions so Alexa.Discovery.DeleteReport is sent
+            // when the last Alexa-enabled device is removed.
+            await this.saveEndpoints(endpoints);
             return [];
+        }
 
         const accessToken = await this.getAccessToken();
         const data = {
