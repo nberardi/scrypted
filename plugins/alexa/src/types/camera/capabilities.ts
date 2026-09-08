@@ -6,12 +6,54 @@ const { mediaManager } = sdk;
 
 // Amazon SmartVision imageNetClass only accepts person and package.
 const SMARTVISION_IMAGE_NET_CLASSES = new Set(['person', 'package']);
+const DEFAULT_OBJECT_DETECTION_CLASSES = ['person', 'package'];
+
+const enabledObjectDetectionClasses = new Map<string, Set<string>>();
+let persistObjectDetectionClasses: ((value: Record<string, string[]>) => void) | undefined;
 
 function toSmartVisionImageNetClass(className: string | undefined) {
     if (!className)
         return;
     const normalized = className.toLowerCase();
     return SMARTVISION_IMAGE_NET_CLASSES.has(normalized) ? normalized : undefined;
+}
+
+function normalizeObjectDetectionClasses(classes: Iterable<string> | undefined): Set<string> {
+    const result = new Set<string>();
+    if (!classes)
+        return result;
+    for (const cls of classes) {
+        const imageNetClass = toSmartVisionImageNetClass(typeof cls === 'string' ? cls : undefined);
+        if (imageNetClass)
+            result.add(imageNetClass);
+    }
+    return result;
+}
+
+export function setObjectDetectionClassesPersistence(saved: Record<string, string[]> | undefined, persist?: (value: Record<string, string[]>) => void) {
+    persistObjectDetectionClasses = persist;
+    enabledObjectDetectionClasses.clear();
+    if (!saved || typeof saved !== 'object')
+        return;
+    for (const [deviceId, classes] of Object.entries(saved)) {
+        if (!deviceId)
+            continue;
+        enabledObjectDetectionClasses.set(deviceId, normalizeObjectDetectionClasses(Array.isArray(classes) ? classes : []));
+    }
+}
+
+export function getEnabledObjectDetectionClasses(deviceId: string): Set<string> {
+    return enabledObjectDetectionClasses.get(deviceId) ?? new Set(DEFAULT_OBJECT_DETECTION_CLASSES);
+}
+
+export function setEnabledObjectDetectionClasses(deviceId: string, classes: string[]) {
+    enabledObjectDetectionClasses.set(deviceId, normalizeObjectDetectionClasses(classes));
+    if (!persistObjectDetectionClasses)
+        return;
+    const saved: Record<string, string[]> = {};
+    for (const [id, enabled] of enabledObjectDetectionClasses)
+        saved[id] = [...enabled];
+    persistObjectDetectionClasses(saved);
 }
 
 export async function reportCameraState(device: ScryptedDevice & MotionSensor & ObjectDetector): Promise<Partial<Report>>{
@@ -39,8 +81,12 @@ export async function sendCameraEvent (eventSource: ScryptedDevice & MotionSenso
     if (eventDetails.eventInterface === ScryptedInterface.ObjectDetector) {
 
         // ring and motion are not valid objects, but may accompany valid detections.
-        // Amazon SmartVision only accepts person and package imageNetClass values.
-        const detections = eventData.detections?.filter(detection => detection.className !== 'ring' && detection.className !== 'motion' && toSmartVisionImageNetClass(detection.className));
+        // Amazon SmartVision only accepts person and package; also honor SetObjectDetectionClasses.
+        const enabled = getEnabledObjectDetectionClasses(eventSource.id);
+        const detections = eventData.detections?.filter(detection => {
+            const imageNetClass = toSmartVisionImageNetClass(detection.className);
+            return !!imageNetClass && enabled.has(imageNetClass);
+        });
         if (!detections?.length)
             return undefined;
 
