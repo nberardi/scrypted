@@ -254,3 +254,14 @@ alexaDeviceHandlers.set('Alexa.SmartVision.ObjectDetectionSensor/SetObjectDetect
 
     sendDeviceResponse(data, response, device);
 });
+
+// Cameras already discovered with Alexa.DataController still send these directives.
+// Events are not persisted, so reject with the DataController error types Alexa expects
+// (namespace Alexa.DataController, name ErrorResponse, payloadVersion 1.0).
+alexaDeviceHandlers.set('Alexa.DataController/ReportData', async (request, response, directive: any, device: ScryptedDevice) => {
+    response.send(deviceErrorResponse("DATA_RETRIEVAL_NOT_SUPPORTED", "Detection event retrieval is not supported.", directive));
+});
+
+alexaDeviceHandlers.set('Alexa.DataController/DeleteData', async (request, response, directive: any, device: ScryptedDevice) => {
+    response.send(deviceErrorResponse("DATA_DELETION_NOT_SUPPORTED", "Detection event deletion is not supported.", directive));
+});
