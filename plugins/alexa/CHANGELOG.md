@@ -1,6 +1,12 @@
 <details>
 <summary>Changelog</summary>
 
+### 0.5.5
+
+alexa: camera streaming and SmartVision spec fixes (RTC timeout, session reuse, object detection classes, payloadVersion, DeleteReport)
+alexa: log discarded Amazon directives and filtered detections when Debug Events is enabled
+
+
 ### 0.3.6
 
 alexa: maybe fix alexa when no detection types are available
