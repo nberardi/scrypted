@@ -346,8 +346,12 @@ class AlexaPlugin extends ScryptedDeviceBase implements HttpRequestHandler, Mixi
     async syncEndpoints() {
         const endpoints = await this.getEndpoints();
 
-        if (!endpoints.length)
+        if (!endpoints.length) {
+            // Still reconcile deletions so Alexa.Discovery.DeleteReport is sent
+            // when the last Alexa-enabled device is removed.
+            await this.saveEndpoints(endpoints);
             return [];
+        }
 
         const accessToken = await this.getAccessToken();
         const data = {
