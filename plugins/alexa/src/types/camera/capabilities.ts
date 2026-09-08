@@ -1,6 +1,7 @@
 import sdk, { MediaObject, MotionSensor, ObjectDetector, ScryptedDevice, ScryptedInterface } from "@scrypted/sdk";
 import { v4 as createMessageId } from 'uuid';
 import { ChangeReport, DiscoveryCapability, ObjectDetectionEvent, Report, StateReport, Property } from "../../alexa";
+import { debug } from "../../common";
 
 const { mediaManager } = sdk;
 
@@ -87,10 +88,13 @@ export async function sendCameraEvent (eventSource: ScryptedDevice & MotionSenso
             const imageNetClass = toSmartVisionImageNetClass(detection.className);
             return !!imageNetClass && enabled.has(imageNetClass);
         });
-        if (!detections?.length)
+        if (!detections?.length) {
+            const incoming = (eventData.detections || []).map(detection => detection?.className).filter(Boolean);
+            debug(`discarded detection: ${eventSource.name} classes=${incoming.join(',') || '(none)'} enabled=${[...enabled].join(',')}`);
             return undefined;
+        }
 
-        console.debug('ObjectDetector event', eventData);
+        debug('ObjectDetector event', eventData);
 
         let mediaObj: MediaObject = undefined;
         let frameImageUri: string = undefined;

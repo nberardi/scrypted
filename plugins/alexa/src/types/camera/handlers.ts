@@ -1,7 +1,7 @@
 import { ObjectDetector, RTCAVSignalingSetup, RTCSessionControl, RTCSignalingChannel, RTCSignalingOptions, RTCSignalingSendIceCandidate, RTCSignalingSession, ScryptedDevice } from "@scrypted/sdk";
 import { supportedTypes } from "..";
 import { v4 as createMessageId } from 'uuid';
-import { AlexaHttpResponse, deviceErrorResponse, sendDeviceResponse } from "../../common";
+import { AlexaHttpResponse, debug, deviceErrorResponse, sendDeviceResponse } from "../../common";
 import { alexaDeviceHandlers } from "../../handlers";
 import { Response, WebRTCAnswerGeneratedForSessionEvent, WebRTCSessionConnectedEvent, WebRTCSessionDisconnectedEvent } from '../../alexa'
 import { Deferred } from '@scrypted/common/src/deferred';
@@ -227,8 +227,10 @@ alexaDeviceHandlers.set('Alexa.RTCSessionController/SessionDisconnected', async 
 
 alexaDeviceHandlers.set('Alexa.SmartVision.ObjectDetectionSensor/SetObjectDetectionClasses', async (request, response, directive: any, device: ScryptedDevice & ObjectDetector) => {
     const supportedType = supportedTypes.get(device.type);
-    if (!supportedType)
+    if (!supportedType) {
+        debug(`discarded amazon directive: Alexa.SmartVision.ObjectDetectionSensor/SetObjectDetectionClasses unsupported type=${device.type} endpoint=${device.id} name=${device.name}`);
         return;
+    }
 
     const { header, endpoint, payload } = directive;
     const requested = (payload?.objectDetectionClasses || [])
@@ -256,9 +258,11 @@ alexaDeviceHandlers.set('Alexa.SmartVision.ObjectDetectionSensor/SetObjectDetect
 // Events are not persisted, so reject with the DataController error types Alexa expects
 // (namespace Alexa.DataController, name ErrorResponse, payloadVersion 1.0).
 alexaDeviceHandlers.set('Alexa.DataController/ReportData', async (request, response, directive: any, device: ScryptedDevice) => {
+    debug(`discarded amazon directive: Alexa.DataController/ReportData DATA_RETRIEVAL_NOT_SUPPORTED endpoint=${device.id} name=${device.name}`, directive?.payload);
     response.send(deviceErrorResponse("DATA_RETRIEVAL_NOT_SUPPORTED", "Detection event retrieval is not supported.", directive));
 });
 
 alexaDeviceHandlers.set('Alexa.DataController/DeleteData', async (request, response, directive: any, device: ScryptedDevice) => {
+    debug(`discarded amazon directive: Alexa.DataController/DeleteData DATA_DELETION_NOT_SUPPORTED endpoint=${device.id} name=${device.name}`, directive?.payload);
     response.send(deviceErrorResponse("DATA_DELETION_NOT_SUPPORTED", "Detection event deletion is not supported.", directive));
 });

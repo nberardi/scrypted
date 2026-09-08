@@ -1,6 +1,17 @@
 import { Online, ScryptedDevice, ScryptedInterface, HttpResponse } from "@scrypted/sdk";
 import { v4 as createMessageId } from 'uuid';
 
+export let DEBUG = false;
+
+export function setDebug(value: boolean) {
+    DEBUG = !!value;
+}
+
+export function debug(...args: any[]) {
+    if (DEBUG)
+        console.debug(...args);
+}
+
 export interface AlexaHttpResponse extends HttpResponse {
     send(body: any, options?: any): void;
 }
