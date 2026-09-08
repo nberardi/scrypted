@@ -1,7 +1,7 @@
 import axios from 'axios';
 import sdk, { HttpRequest, HttpRequestHandler, MixinProvider, ScryptedDevice, ScryptedDeviceBase, ScryptedDeviceType, ScryptedInterface, EventDetails, Setting, SettingValue, Settings, HttpResponseOptions, HttpResponse } from '@scrypted/sdk';
 import { StorageSettings } from '@scrypted/sdk/storage-settings';
-import { addOnline, deviceErrorResponse, mirroredResponse, authErrorResponse, AlexaHttpResponse } from './common';
+import { addOnline, deviceErrorResponse, mirroredResponse, authErrorResponse, AlexaHttpResponse, debug, setDebug } from './common';
 import { supportedTypes } from './types';
 import { v4 as createMessageId } from 'uuid';
 import { ChangeReport, Discovery, DiscoveryEndpoint } from './alexa';
@@ -13,13 +13,6 @@ const { systemManager, deviceManager } = sdk;
 const client_id = "amzn1.application-oa2-client.3283807e04d8408eb44a698c10f9dd13";
 const client_secret = "bed445e2b26730acd818b90e175b275f6b67b18ff8645e571c5b3e311fa75ee9";
 const includeToken = 4;
-
-export let DEBUG = false;
-
-function debug(...args: any[]) {
-    if (DEBUG)
-        console.debug(...args);
-}
 
 class AlexaPlugin extends ScryptedDeviceBase implements HttpRequestHandler, MixinProvider, Settings {
     storageSettings = new StorageSettings(this, {
@@ -47,7 +40,7 @@ class AlexaPlugin extends ScryptedDeviceBase implements HttpRequestHandler, Mixi
             description: 'Log all events to the console. This will be very noisy and should not be left enabled.',
             type: 'boolean',
             onPut(oldValue: boolean, newValue: boolean) {
-                DEBUG = newValue;
+                setDebug(newValue);
             }
         },
         pairedUserId: {
@@ -82,7 +75,7 @@ class AlexaPlugin extends ScryptedDeviceBase implements HttpRequestHandler, Mixi
     constructor(nativeId?: string) {
         super(nativeId);
 
-        DEBUG = this.storageSettings.values.debug ?? false;
+        setDebug(this.storageSettings.values.debug ?? false);
         setUseTurnServer(this.storageSettings.values.useTurnServer);
         setObjectDetectionClassesPersistence(
             this.storageSettings.values.objectDetectionClasses,
@@ -664,6 +657,7 @@ class AlexaPlugin extends ScryptedDeviceBase implements HttpRequestHandler, Mixi
         }
 
         const mapName = `${namespace}/${name}`;
+        const endpointId = directive?.endpoint?.endpointId;
 
         debug("received directive from alexa", mapName, body);
 
@@ -678,6 +672,7 @@ class AlexaPlugin extends ScryptedDeviceBase implements HttpRequestHandler, Mixi
         const getDevice = () => {
             const device = systemManager.getDeviceById(directive.endpoint.endpointId);
             if (!device || !device.mixins.includes(this.id)) {
+                debug(`discarded amazon directive: ${mapName} NO_SUCH_ENDPOINT endpoint=${directive.endpoint.endpointId}`);
                 response.send(deviceErrorResponse("NO_SUCH_ENDPOINT", "The device doesn't exist in Scrypted or was removed from the Alexa Plugin", directive));
                 this.deleteEndpoints(directive.endpoint.endpointId).catch(() => { });
                 return;
@@ -692,6 +687,7 @@ class AlexaPlugin extends ScryptedDeviceBase implements HttpRequestHandler, Mixi
             await deviceHandler.apply(this, [request, response, directive, device]);
             return;
         } else {
+            debug(`discarded amazon directive: no handler for ${mapName}${endpointId ? ` endpoint=${endpointId}` : ''}`, directive?.payload);
             this.console.error(`no handler for: ${mapName}`);
             if (!getDevice())
                 return;
