@@ -3,10 +3,11 @@ import { supportedTypes } from "..";
 import { v4 as createMessageId } from 'uuid';
 import { AlexaHttpResponse, debug, deviceErrorResponse, sendDeviceResponse } from "../../common";
 import { alexaDeviceHandlers } from "../../handlers";
-import { Response, WebRTCAnswerGeneratedForSessionEvent, WebRTCSessionConnectedEvent, WebRTCSessionDisconnectedEvent } from '../../alexa'
+import { Response, WebRTCSessionConnectedEvent, WebRTCSessionDisconnectedEvent } from '../../alexa'
 import { Deferred } from '@scrypted/common/src/deferred';
 import { timeoutPromise } from '@scrypted/common/src/promise-utils';
 import { setEnabledObjectDetectionClasses } from './capabilities';
+import { createAnswerGeneratedForSession, RtcSessionManager, RTC_ANSWER_TIMEOUT_MS } from './session-manager';
 
 export { setObjectDetectionClassesPersistence } from './capabilities';
 
@@ -93,84 +94,47 @@ export class AlexaSignalingSession implements RTCSignalingSession {
         if (this.responded || this.remoteDescription.finished)
             return;
 
+        if (!description.sdp) {
+            const e = new Error('Alexa RTC answer is missing SDP.');
+            this.remoteDescription.reject(e);
+            throw e;
+        }
+
         this.responded = true;
-
-        const { header, endpoint, payload } = this.directive;
-
-        const data: WebRTCAnswerGeneratedForSessionEvent = {
-            "event": {
-                header,
-                endpoint,
-                payload
-            },
-            context: undefined
-        };
-
-        data.event.header.name = "AnswerGeneratedForSession";
-        data.event.header.messageId = createMessageId();
-
-        data.event.payload.answer = {
-            format: 'SDP',
-            value: description.sdp,
-        };
-
+        this.response.send(createAnswerGeneratedForSession(this.directive, description.sdp));
         this.remoteDescription.resolve();
-        this.response.send(data);
     }
 }
 
-const sessionCache = new Map<string, RTCSessionControl>();
-
-async function endRtcSession(control?: RTCSessionControl) {
-    if (!control)
-        return;
-    try {
-        await control.endSession();
-    }
-    catch {
-    }
-}
-
-async function uncacheAndEndSession(sessionId: string) {
-    const control = sessionCache.get(sessionId);
-    if (!control)
-        return;
-    sessionCache.delete(sessionId);
-    await endRtcSession(control);
-}
+const sessionManager = new RtcSessionManager();
 
 alexaDeviceHandlers.set('Alexa.RTCSessionController/InitiateSessionWithOffer', async (request, response, directive: any, device: ScryptedDevice & RTCSignalingChannel) => {
-    const { payload } = directive;
+    const { endpoint, payload } = directive;
     const { sessionId } = payload;
 
     const session = new AlexaSignalingSession(response, directive);
+    const registration = sessionManager.begin(endpoint.endpointId, sessionId);
     let control: RTCSessionControl | undefined;
-    let failed = false;
     session.remoteDescription.promise.catch(() => {});
 
     try {
         // Alexa requires an SDP answer within 6 seconds of InitiateSessionWithOffer.
         const negotiation = (async () => {
             control = await device.startRTCSignalingSession(session);
-            if (failed) {
-                await endRtcSession(control);
-                return;
-            }
-            control.setPlayback({
-                audio: true,
-                video: false,
-            });
+            if (!await sessionManager.attach(registration, control))
+                throw new Error('RTC session was superseded before negotiation completed.');
             await session.remoteDescription.promise;
         })();
-        await timeoutPromise(6000, negotiation);
-        // Swap before ending so SessionDisconnected always finds the live control
-        // and a hung previous endSession cannot block or skip the cache insert.
-        const previous = sessionCache.get(sessionId);
-        sessionCache.set(sessionId, control);
-        await endRtcSession(previous);
+        await timeoutPromise(RTC_ANSWER_TIMEOUT_MS, negotiation);
+
+        // Talkback setup is not part of SDP answer generation and must not consume the
+        // six-second response budget or tear down otherwise healthy one-way video.
+        control.setPlayback({
+            audio: true,
+            video: false,
+        }).catch(e => console.error('Alexa RTC talkback setup failed', e));
     }
     catch (e) {
-        failed = true;
         console.error('Alexa RTC InitiateSessionWithOffer failed', e);
 
         if (!session.remoteDescription.finished)
@@ -185,7 +149,7 @@ alexaDeviceHandlers.set('Alexa.RTCSessionController/InitiateSessionWithOffer', a
             response.send(data);
         }
 
-        await endRtcSession(control);
+        await sessionManager.endRegistration(registration);
     }
 });
 
@@ -209,7 +173,7 @@ alexaDeviceHandlers.set('Alexa.RTCSessionController/SessionDisconnected', async 
     const { header, endpoint, payload } = directive;
     const { sessionId } = payload;
 
-    await uncacheAndEndSession(sessionId);
+    await sessionManager.end(endpoint.endpointId, sessionId);
 
     const data: WebRTCSessionDisconnectedEvent = {
         "event": {
