@@ -1,5 +1,5 @@
 import { HttpRequest, ScryptedDevice } from "@scrypted/sdk";
-import { AlexaHttpResponse, sendDeviceResponse } from "./common";
+import { AlexaHttpResponse, debug, sendDeviceResponse } from "./common";
 import { supportedTypes } from "./types";
 import { v4 as createMessageId } from 'uuid';
 import { Directive, StateReport } from "./alexa";
@@ -12,8 +12,10 @@ export const alexaHandlers = new Map<string, AlexaHandler>();
 
 alexaDeviceHandlers.set('Alexa/ReportState', async (request, response, directive: any, device: ScryptedDevice) => {
     const supportedType = supportedTypes.get(device.type);
-    if (!supportedType)
+    if (!supportedType) {
+        debug(`discarded amazon directive: Alexa/ReportState unsupported type=${device.type} endpoint=${device.id} name=${device.name}`);
         return;
+    }
 
     const { header, endpoint, payload } = directive;
     const report = await supportedType.sendReport(device);

@@ -1,10 +1,15 @@
 import { ObjectDetector, RTCAVSignalingSetup, RTCSessionControl, RTCSignalingChannel, RTCSignalingOptions, RTCSignalingSendIceCandidate, RTCSignalingSession, ScryptedDevice } from "@scrypted/sdk";
 import { supportedTypes } from "..";
 import { v4 as createMessageId } from 'uuid';
-import { AlexaHttpResponse, sendDeviceResponse } from "../../common";
+import { AlexaHttpResponse, debug, deviceErrorResponse, sendDeviceResponse } from "../../common";
 import { alexaDeviceHandlers } from "../../handlers";
-import { Response, WebRTCAnswerGeneratedForSessionEvent, WebRTCSessionConnectedEvent, WebRTCSessionDisconnectedEvent } from '../../alexa'
+import { Response, WebRTCSessionConnectedEvent, WebRTCSessionDisconnectedEvent } from '../../alexa'
 import { Deferred } from '@scrypted/common/src/deferred';
+import { timeoutPromise } from '@scrypted/common/src/promise-utils';
+import { setEnabledObjectDetectionClasses } from './capabilities';
+import { createAnswerGeneratedForSession, RtcSessionManager, RTC_ANSWER_TIMEOUT_MS } from './session-manager';
+
+export { setObjectDetectionClassesPersistence } from './capabilities';
 
 // Whether Alexa camera sessions are allowed to use TURN relays. Set by the plugin from its
 // storage settings (see main.ts). When true, TURN usage defers to the WebRTC plugin's own
@@ -23,6 +28,7 @@ export class AlexaSignalingSession implements RTCSignalingSession {
     __proxy_props: { options: RTCSignalingOptions; };
     options: RTCSignalingOptions;
     remoteDescription = new Deferred<void>();
+    responded = false;
 
     async getOptions(): Promise<RTCSignalingOptions> {
         return this.options;
@@ -84,46 +90,67 @@ export class AlexaSignalingSession implements RTCSignalingSession {
     }
 
     async setRemoteDescription(description: RTCSessionDescriptionInit, setup: RTCAVSignalingSetup): Promise<void> {
+        // Do not send a second body if timeout/error already responded.
+        if (this.responded || this.remoteDescription.finished)
+            return;
 
-        const { header, endpoint, payload } = this.directive;
+        if (!description.sdp) {
+            const e = new Error('Alexa RTC answer is missing SDP.');
+            this.remoteDescription.reject(e);
+            throw e;
+        }
 
-        const data: WebRTCAnswerGeneratedForSessionEvent = {
-            "event": {
-                header,
-                endpoint,
-                payload
-            },
-            context: undefined
-        };
-
-        data.event.header.name = "AnswerGeneratedForSession";
-        data.event.header.messageId = createMessageId();
-
-        data.event.payload.answer = {
-            format: 'SDP',
-            value: description.sdp,
-        };
-
+        this.responded = true;
+        this.response.send(createAnswerGeneratedForSession(this.directive, description.sdp));
         this.remoteDescription.resolve();
-        this.response.send(data);
     }
 }
 
-const sessionCache = new Map<string, RTCSessionControl>();
+const sessionManager = new RtcSessionManager();
 
 alexaDeviceHandlers.set('Alexa.RTCSessionController/InitiateSessionWithOffer', async (request, response, directive: any, device: ScryptedDevice & RTCSignalingChannel) => {
-    const { header, endpoint, payload } = directive;
+    const { endpoint, payload } = directive;
     const { sessionId } = payload;
 
     const session = new AlexaSignalingSession(response, directive);
-    const control = await device.startRTCSignalingSession(session);
-    control.setPlayback({
-        audio: true,
-        video: false,
-    });
-    await session.remoteDescription.promise;
+    const registration = sessionManager.begin(endpoint.endpointId, sessionId);
+    let control: RTCSessionControl | undefined;
+    session.remoteDescription.promise.catch(() => {});
 
-    sessionCache.set(sessionId, control);
+    try {
+        // Alexa requires an SDP answer within 6 seconds of InitiateSessionWithOffer.
+        const negotiation = (async () => {
+            control = await device.startRTCSignalingSession(session);
+            if (!await sessionManager.attach(registration, control))
+                throw new Error('RTC session was superseded before negotiation completed.');
+            await session.remoteDescription.promise;
+        })();
+        await timeoutPromise(RTC_ANSWER_TIMEOUT_MS, negotiation);
+
+        // Talkback setup is not part of SDP answer generation and must not consume the
+        // six-second response budget or tear down otherwise healthy one-way video.
+        control.setPlayback({
+            audio: true,
+            video: false,
+        }).catch(e => console.error('Alexa RTC talkback setup failed', e));
+    }
+    catch (e) {
+        console.error('Alexa RTC InitiateSessionWithOffer failed', e);
+
+        if (!session.remoteDescription.finished)
+            session.remoteDescription.reject(e instanceof Error ? e : new Error(String(e)));
+
+        if (!session.responded) {
+            session.responded = true;
+            const data = deviceErrorResponse("INTERNAL_ERROR", "Unable to generate an SDP answer for the RTC session.", directive);
+            // ErrorResponse for this directive must use namespace Alexa, not RTCSessionController.
+            data.event.header.namespace = "Alexa";
+            data.event.header.payloadVersion = "3";
+            response.send(data);
+        }
+
+        await sessionManager.endRegistration(registration);
+    }
 });
 
 alexaDeviceHandlers.set('Alexa.RTCSessionController/SessionConnected', async (request, response, directive: any, device: ScryptedDevice) => {
@@ -146,11 +173,7 @@ alexaDeviceHandlers.set('Alexa.RTCSessionController/SessionDisconnected', async 
     const { header, endpoint, payload } = directive;
     const { sessionId } = payload;
 
-    const session = sessionCache.get(sessionId);
-    if (session) {
-        sessionCache.delete(sessionId);
-        await session.endSession();
-    }
+    await sessionManager.end(endpoint.endpointId, sessionId);
 
     const data: WebRTCSessionDisconnectedEvent = {
         "event": {
@@ -168,33 +191,42 @@ alexaDeviceHandlers.set('Alexa.RTCSessionController/SessionDisconnected', async 
 
 alexaDeviceHandlers.set('Alexa.SmartVision.ObjectDetectionSensor/SetObjectDetectionClasses', async (request, response, directive: any, device: ScryptedDevice & ObjectDetector) => {
     const supportedType = supportedTypes.get(device.type);
-    if (!supportedType)
+    if (!supportedType) {
+        debug(`discarded amazon directive: Alexa.SmartVision.ObjectDetectionSensor/SetObjectDetectionClasses unsupported type=${device.type} endpoint=${device.id} name=${device.name}`);
         return;
+    }
 
     const { header, endpoint, payload } = directive;
-    const detectionTypes = await device.getObjectTypes();
+    const requested = (payload?.objectDetectionClasses || [])
+        .map((item: any) => item?.imageNetClass)
+        .filter((imageNetClass: unknown): imageNetClass is string => typeof imageNetClass === 'string');
+    setEnabledObjectDetectionClasses(device.id, requested);
 
     const data: Response = {
         "event": {
             header,
             endpoint,
             payload: {}
-        },
-        "context": {
-            "properties": [{
-                "namespace": "Alexa.SmartVision.ObjectDetectionSensor",
-                "name": "objectDetectionClasses",
-                "value": detectionTypes.classes.map(type => ({
-                    "imageNetClass": type
-                })),
-                timeOfSample: new Date().toISOString(),
-                uncertaintyInMilliseconds: 0
-            }]
         }
     };
 
+    data.event.header.namespace = "Alexa";
     data.event.header.name = "Response";
+    data.event.header.payloadVersion = "3";
     data.event.header.messageId = createMessageId();
 
     sendDeviceResponse(data, response, device);
+});
+
+// Cameras already discovered with Alexa.DataController still send these directives.
+// Events are not persisted, so reject with the DataController error types Alexa expects
+// (namespace Alexa.DataController, name ErrorResponse, payloadVersion 1.0).
+alexaDeviceHandlers.set('Alexa.DataController/ReportData', async (request, response, directive: any, device: ScryptedDevice) => {
+    debug(`discarded amazon directive: Alexa.DataController/ReportData DATA_RETRIEVAL_NOT_SUPPORTED endpoint=${device.id} name=${device.name}`, directive?.payload);
+    response.send(deviceErrorResponse("DATA_RETRIEVAL_NOT_SUPPORTED", "Detection event retrieval is not supported.", directive));
+});
+
+alexaDeviceHandlers.set('Alexa.DataController/DeleteData', async (request, response, directive: any, device: ScryptedDevice) => {
+    debug(`discarded amazon directive: Alexa.DataController/DeleteData DATA_DELETION_NOT_SUPPORTED endpoint=${device.id} name=${device.name}`, directive?.payload);
+    response.send(deviceErrorResponse("DATA_DELETION_NOT_SUPPORTED", "Detection event deletion is not supported.", directive));
 });
